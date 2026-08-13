@@ -3,7 +3,6 @@ import contextlib
 import json
 import logging
 import os
-import random
 import re
 from typing import Any
 
@@ -49,38 +48,19 @@ VOICE_INSTRUCTIONS = """\
 - If asked for code or technical details: explain briefly in words; never output code or syntax."""
 
 # ---------------------------------------------------------------------------
-# Lapis 3 — Anti-silence filler engine (v4, dwell-based).
+# Lapis 3 — Silence handling (v5: voice fillers REMOVED).
 #
-# v3 was EVENT-keyed: every tool.generating could emit a progress ack. In
-# tool CHAINS (search → extract → search, measured 7 tools / 30s) that
-# spammed the user with back-to-back fillers. LiveKit's own guidance is a
-# single "thinking sound" as the silence mask, and the SDK's built-in
-# _FillerScheduler is dwell-based for the same reason.
-#
-# v4 = pure silence dwell, ONE engine, no per-tool voice:
-#   continuous silence ≥ FIRST_SILENCE_DWELL before any speech → filler 1
-#   continuous silence ≥ MID_SILENCE_DWELL mid-turn            → filler 2
-#   MAX_FILLERS = 2 per turn, then quiet trust
-#   race guard: when the dwell fires, wait RACE_GUARD_DEFER more before
-#     speaking — if real text lands in that window, process it instead
-#     (the answer was about to stream; a filler would race it)
-#   tool.complete → short dwell (the second LLM pass runs 2-4s measured)
+# v4's dwell engine measured silence from TEXT-EMIT time, not from actual
+# audio playout, so back-to-back segments still stacked audibly. Instead of
+# patching playout tracking, the decision (user, 2026-08-14): no voice
+# fillers at all. The UI now shows PERMANENT per-tool progress rows
+# (Gemini/Claude style) — they replace the filler's purpose of signaling
+# "still working". Voice pattern per turn is exactly two moments:
+#   1. the opening sentence ("let me check…"), flushed right before the
+#      first tool runs
+#   2. the final result
+# Two spoken moments, zero chatter.
 # ---------------------------------------------------------------------------
-FIRST_SILENCE_DWELL = 5.0  # ≥5s silent from submit before first filler
-MID_SILENCE_DWELL = 10.0  # mid-turn gap before the second (and last)
-POST_TOOL_DWELL = 4.0  # covers the post-tool composing pass (2-4s measured)
-RACE_GUARD_DEFER = 1.5  # grace window before a filler actually speaks
-MAX_FILLERS = 2  # one opening "let me think" + one "still on it" — enough
-FILLER_FIRST = [
-    "[calm] One second, let me think.",
-    "[soft] Hmm, give me a moment.",
-    "[gentle] Let me think about that for a second.",
-]
-FILLER_MID = [
-    "[calm] Still working on it, hang tight.",
-    "[soft] Almost there, just a little more.",
-    "[warm] This is taking a moment, thanks for waiting.",
-]
 
 # ---------------------------------------------------------------------------
 # Lapis 2 — Sentence splitter + cleaner (TTS safety net).
@@ -449,14 +429,9 @@ class HermesLLMStream(LLMStream):
         reader = asyncio.create_task(_ws_reader(hermes._ws, queue))
 
         async def send_text(text: str, *, flush_after: bool = False) -> None:
-            nonlocal spoken_any, t_last_spoken, pending_text, filler_deadline
+            nonlocal spoken_any, t_last_spoken, pending_text
             spoken_any = True
             t_last_spoken = loop.time()
-            # Invariant: the dwell deadline is always measured from the last
-            # spoken audio, never from submit — otherwise an opening
-            # sentence at +2s would be followed by a filler only 3s later.
-            if fillers_sent < MAX_FILLERS:
-                filler_deadline = loop.time() + MID_SILENCE_DWELL
             # Always terminate chunks on whitespace: the voice pipeline
             # concatenates deltas, so "satu." + "Dua" would become "satu.Dua"
             # — Fish TTS spells the glued token letter-by-letter and the
@@ -487,55 +462,15 @@ class HermesLLMStream(LLMStream):
         got_ack = False
         turn_over = False
         sentence_buffer = ""
-        fillers_sent = 0
         spoken_any = False
         pending_text = False  # text emitted since the last FlushSentinel
         t_last_spoken = loop.time()
         t_first_delta: float | None = None
         t_first_sentence: float | None = None
-        # Lapis 3 v4 (dwell-based): the deadline is "if still silent at this
-        # instant, speak a filler". Every real text delta pushes it forward
-        # (streaming answer = no filler), tool completion tightens it (the
-        # composing pass is short), and a filler firing re-arms the next one.
-        filler_deadline: float | None = loop.time() + FIRST_SILENCE_DWELL
 
         try:
             while not turn_over:
-                timeout = None
-                if filler_deadline is not None:
-                    timeout = max(filler_deadline - loop.time(), 0.05)
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    # Silence dwell exceeded. Before speaking, hold a short
-                    # grace window: if real text lands right now (it was
-                    # about to), the filler would race the answer — drop it
-                    # and process the text instead.
-                    if fillers_sent >= MAX_FILLERS:
-                        filler_deadline = None
-                        continue
-                    try:
-                        item = await asyncio.wait_for(
-                            queue.get(), timeout=RACE_GUARD_DEFER
-                        )
-                    except asyncio.TimeoutError:
-                        pool = FILLER_FIRST if not spoken_any else FILLER_MID
-                        logger.info(
-                            "Filler %d after %.1fs silence dwell (pool=%s)",
-                            fillers_sent + 1,
-                            loop.time() - t_last_spoken,
-                            "first" if not spoken_any else "mid",
-                        )
-                        await send_text(random.choice(pool), flush_after=True)
-                        fillers_sent += 1
-                        filler_deadline = (
-                            loop.time() + MID_SILENCE_DWELL
-                            if fillers_sent < MAX_FILLERS
-                            else None
-                        )
-                        continue
-                    # Grace window produced an event — fall through and
-                    # handle it below (the loop below processes `item`).
+                item = await queue.get()
 
                 if isinstance(item, BaseException):
                     hermes._invalidate_connection()
@@ -573,11 +508,6 @@ class HermesLLMStream(LLMStream):
                                 "Hermes TTFT: %.2fs after submit",
                                 t_first_delta - t_submit,
                             )
-                        # Real text is streaming → push the dwell deadline out.
-                        # As long as deltas keep arriving, no filler fires;
-                        # only a genuine multi-second gap re-triggers one.
-                        if fillers_sent < MAX_FILLERS:
-                            filler_deadline = loop.time() + MID_SILENCE_DWELL
                         sentence_buffer += delta
                         # Lapis 2: cut complete sentences, clean, yield.
                         while True:
@@ -602,27 +532,21 @@ class HermesLLMStream(LLMStream):
                 elif event_type == "tool.generating":
                     tool_name = payload.get("name", "?")
                     logger.info("Hermes tool started: %s", tool_name)
-                    # UI activity chip: "Searching the web…" while running.
+                    # UI progress row: "Searching the web…". The client keeps
+                    # a permanent per-tool log (Gemini/Claude style) — the
+                    # visual replaces voice fillers entirely.
                     hermes.publish_tool_activity("start", tool_name)
                     # Release any text still held in the TTS sentence buffer
                     # (e.g. the opening "I'll check..." sentence) so it is
-                    # synthesized and plays WHILE the tool runs.
+                    # synthesized and plays WHILE the tool runs. This keeps
+                    # the voice pattern to exactly two moments: opening
+                    # sentence + final result. No filler chatter in between.
                     if pending_text:
                         logger.info("Flushing pending text before tool: %s", tool_name)
                         await flush_segment()
-                    # v4: NO voice ack per tool. In chains (7 tools in one
-                    # turn, measured) per-tool acks spam the user. The dwell
-                    # engine covers genuine silence gaps instead — the
-                    # flushed pending text above already updates t_last_spoken
-                    # via send_text, restarting the dwell from here.
                 elif event_type == "tool.complete":
                     logger.info("Hermes tool complete")
                     hermes.publish_tool_activity("complete", "?")
-                    # The second LLM pass (composing the answer) runs 2-4s
-                    # measured. Tighten the dwell: if nothing streams within
-                    # POST_TOOL_DWELL after the tool, a filler covers it.
-                    if fillers_sent < MAX_FILLERS:
-                        filler_deadline = loop.time() + POST_TOOL_DWELL
                 elif event_type in (
                     "message.complete",
                     "turn.complete",
