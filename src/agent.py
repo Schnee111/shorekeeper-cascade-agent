@@ -147,43 +147,40 @@ async def my_agent(ctx: JobContext):
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models at https://docs.livekit.io/agents/models/tts/
         tts=inference.TTS(model="fishaudio/s2.1-pro-free", voice=voice_id),
-        # VAD: the bundled silero default uses min_silence_duration=0.25s — a
-        # 250ms pause (a normal quick breath!) already declares "speech ended",
-        # which kicks off the endpointing timer and splits one utterance into
-        # two turns. Log evidence (2026-08-14): "coba deep research" committed
-        # at a breath, then the remainder re-submitted as turn two; same for
-        # "rekap semua aktivitas" / "…semingga terakhir". 0.6s tolerates
-        # breaths and short thinking pauses; genuine end-of-speech still fires
-        # fast enough (endpointing.min_delay below adds the real grace).
-        # Cost: +350ms on true end-of-turn — masked by preemptive generation.
-        vad=inference.VAD(model="silero", min_silence_duration=0.6),
+        # VAD: silero min_silence_duration — how long a silence must be before
+        # the VAD declares "speech ended" and hands the decision to the turn
+        # detector. 0.25s (default) treats a quick breath as end-of-speech.
+        # With real semantic gating below, a slightly-early trigger only means
+        # the detector evaluates sooner — it can hold the turn if unsure.
+        vad=inference.VAD(model="silero", min_silence_duration=0.5),
         turn_handling=TurnHandlingOptions(
-            # The LiveKit turn detector determines when the user is done speaking and the agent should respond.
-            # TurnDetector is an end-of-turn model that listens to the user's audio directly, combining
-            # semantic understanding with acoustic cues (intonation, pitch, rhythm) for state-of-the-art accuracy.
-            # AgentSession supplies the required VAD automatically.
-            # See more at https://docs.livekit.io/agents/build/turns
+            # Turn detection — the piece that decides "is the user done?".
             #
-            # unlikely_threshold raised for id/en (defaults 0.345/0.36): when the
-            # end-of-turn probability clears the threshold, the turn commits after
-            # just `endpointing.min_delay`. The defaults commit on weak evidence, so
-            # a mid-sentence breath splits one utterance into several turns — each
-            # fragment becomes a separate prompt.submit to Hermes (log evidence:
-            # repeated one-word turns; "transcript arrives after turn committed").
-            # 0.45 was still too low (20:04 log: commit gap ~1.15s at a breath
-            # pause → probability was still ≥ 0.45). 0.65 forces the pipeline to
-            # wait the full max_delay instead of committing early.
-            turn_detection=inference.TurnDetector(
-                unlikely_threshold={"id": 0.65, "en": 0.65}
-            ),
-            # Grace period after end-of-turn detection. Streaming default is 0.3s —
-            # Deepgram finals sometimes land later than that and get cut off.
-            # preemptive_generation (below) already starts the LLM while we wait,
-            # so the extra delay barely touched perceived latency.
-            # max_delay is how long we wait when the detector says "maybe not done
-            # yet" (probability < unlikely_threshold) — raised so mid-sentence
-            # pauses have room before a premature commit.
-            endpointing={"min_delay": 1.0, "max_delay": 3.0},
+            # History of this setting (2026-08-14): we ran the SDK's default
+            # local `v1-mini` model on this 2-core VPS. Its first inference
+            # per session exceeded the hardcoded 1.0s prediction timeout →
+            # "eot prediction timed out, committing without a prediction" →
+            # turns committed on silence alone → false cutoffs ("cek
+            # statusnya di" / "…di folder project" split into two turns).
+            # Our unlikely_threshold=0.65 override was also calibrated for an
+            # older model version; the SDK now warns overrides are suboptimal.
+            #
+            # Fix: cloud `version="v1"` — the full LiveKit Turn Detector v1
+            # (eot-bench SOTA across 14 languages incl. Indonesian; listens
+            # to audio directly instead of reading transcripts). Auth reuses
+            # LIVEKIT_API_KEY/SECRET; every plan includes 7,500 free
+            # inference requests/month. local_fallback=True (default) keeps
+            # v1-mini as a degraded path if the gateway is unreachable.
+            # Thresholds: NO override — use LiveKit's per-language calibrated
+            # defaults instead of our stale hand-tuned 0.65.
+            turn_detection=inference.TurnDetector(version="v1"),
+            # Grace period after end-of-turn detection. With semantic gating
+            # actually working, confident end-of-turn commits after min_delay
+            # (snappy), while mid-sentence pauses are held up to max_delay.
+            # min_delay also covers Deepgram finals that land slightly after
+            # end-of-speech. preemptive_generation (below) starts the LLM
+            # during the wait, so perceived latency stays low.
+            endpointing={"min_delay": 0.6, "max_delay": 2.0},
             # Adaptive interruptions use the turn detector to tell a real interruption from a
             # backchannel like "mhm" or "right", so the agent keeps talking through the latter.
             interruption={"mode": "adaptive"},
