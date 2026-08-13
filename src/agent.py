@@ -14,6 +14,7 @@ from livekit.agents import (
     inference,
     room_io,
 )
+from livekit import rtc
 from livekit.plugins import ai_coustics, deepgram
 
 from hermes_llm import HermesLLM
@@ -247,6 +248,23 @@ async def my_agent(ctx: JobContext):
 
     # Let the bridge publish tool-activity events (UI chip) to this room.
     hermes.bind_room(ctx.room)
+
+    # 2026-08-14 — prompt shutdown on user departure. Without this, each job
+    # process lingers 30-45s (room empty_timeout + graceful drain) after the
+    # browser tab closes or a voice switch. Voice switching creates a NEW
+    # room each time, so rapid switching spawned 3-4 overlapping processes
+    # (~300MB each) → RAM exhaustion → swap thrash → "worker at full
+    # capacity" → LiveKit concurrent-job limit notifications. The client
+    # never reconnects to the same room (room name is random per session),
+    # so there is nothing to wait for once the user participant is gone.
+    def _on_participant_disconnected(participant) -> None:
+        if participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT:
+            logger.info(
+                "User left room %s — shutting down job process", ctx.room.name
+            )
+            ctx.shutdown("user left")
+
+    ctx.room.on("participant_disconnected", _on_participant_disconnected)
 
     # # Add a virtual avatar to the session, if desired
     # # For other providers, see https://docs.livekit.io/agents/models/avatar/
