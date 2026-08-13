@@ -12,8 +12,13 @@ from livekit.agents.llm import ChatChunk, ChatContext, ChoiceDelta, LLMStream
 
 # Default connection options matching base LLM.chat signature
 from livekit.agents.llm.llm import DEFAULT_API_CONNECT_OPTIONS
+from websockets.protocol import State
 
 logger = logging.getLogger("hermes-llm")
+
+# How long we wait for the prompt.submit RPC ack before declaring the gateway
+# unresponsive. In practice it arrives in <50ms; 30s only catches real hangs.
+SUBMIT_ACK_TIMEOUT = 30.0
 
 
 class _VoiceFlush(FlushSentinel):
@@ -271,7 +276,7 @@ class HermesLLM(llm.LLM):
         return "hermes"
 
     async def _connect(self) -> None:
-        if self._ws is not None and getattr(self._ws, "open", False):
+        if self._ws is not None and self._ws.state is State.OPEN:
             return
         # Close half-open leftovers from a previous failed turn, if any.
         if self._ws is not None:
@@ -279,23 +284,45 @@ class HermesLLM(llm.LLM):
                 await self._ws.close()
         url = self._ws_url + "?token=" + self._token
         logger.info("Connecting to Hermes at %s", url.replace(self._token, "***"))
-        self._ws = await websockets.connect(url, ping_interval=20, ping_timeout=20)
+        # ping_timeout must comfortably exceed the longest synchronous tool the
+        # gateway runs (delegate_task / long terminal calls can hold it busy
+        # for a minute+). 20s was too aggressive: a busy gateway misses the
+        # pong, websockets closes with 1011, and the next turn dies ("stuck on
+        # thinking"). Local socket — a 90s no-pong is genuinely dead.
+        self._ws = await websockets.connect(url, ping_interval=20, ping_timeout=90)
         logger.info("Connected to Hermes")
 
     def _invalidate_connection(self) -> None:
         """Force reconnect + fresh Hermes session on the next turn."""
-        self._ws = None
+        ws, self._ws = self._ws, None
         self._session_id = None
+        if ws is not None:
+            with contextlib.suppress(Exception):
+                # Best-effort close so a dead socket doesn't leak fds; the
+                # close itself may fail on an already-broken connection.
+                asyncio.get_running_loop().create_task(ws.close())
 
     async def _ensure_session(self) -> str:
         if self._session_id:
-            return self._session_id
+            if self._ws is not None and self._ws.state is State.OPEN:
+                return self._session_id
+            # Socket died mid-session (observed: keepalive 1011 while the
+            # gateway was busy with long tools). Returning the cached
+            # session_id here is what bricked every following turn with
+            # ConnectionClosedError ("stuck on thinking"). Reconnect fresh.
+            logger.warning(
+                "Hermes WS no longer open (state=%s) — reconnecting with a fresh session",
+                getattr(self._ws, "state", None),
+            )
+            self._invalidate_connection()
 
         async with self._ws_lock:
             await self._connect()
+            assert self._ws is not None
+            ws = self._ws
 
             # Wait for gateway.ready
-            async for raw in self._ws:
+            async for raw in ws:
                 data = json.loads(raw)
                 if (
                     data.get("method") == "event"
@@ -306,7 +333,7 @@ class HermesLLM(llm.LLM):
             # Create session
             self._message_id += 1
             create_id = self._message_id
-            await self._ws.send(
+            await ws.send(
                 json.dumps(
                     {
                         "jsonrpc": "2.0",
@@ -319,7 +346,7 @@ class HermesLLM(llm.LLM):
                 )
             )
 
-            async for raw in self._ws:
+            async for raw in ws:
                 data = json.loads(raw)
                 if data.get("id") == create_id:
                     if "error" in data:
@@ -330,7 +357,7 @@ class HermesLLM(llm.LLM):
             # Activate session
             self._message_id += 1
             activate_id = self._message_id
-            await self._ws.send(
+            await ws.send(
                 json.dumps(
                     {
                         "jsonrpc": "2.0",
@@ -341,7 +368,7 @@ class HermesLLM(llm.LLM):
                 )
             )
 
-            async for raw in self._ws:
+            async for raw in ws:
                 data = json.loads(raw)
                 if data.get("id") == activate_id:
                     break
@@ -424,7 +451,7 @@ class HermesLLMStream(LLMStream):
                 )
             )
 
-        # Reader task → queue so we can race WS events against filler timers.
+        # Reader task → queue so we can drain WS events deterministically.
         queue: asyncio.Queue = asyncio.Queue()
         reader = asyncio.create_task(_ws_reader(hermes._ws, queue))
 
@@ -469,6 +496,64 @@ class HermesLLMStream(LLMStream):
         t_first_sentence: float | None = None
 
         try:
+            # Phase 1 — wait for the submit ack and DROP every event that
+            # arrives before it. When LiveKit barges in (user re-speaks),
+            # the previous stream task is cancelled mid-read and its
+            # leftover events stay in the socket buffer. Without this
+            # drain, the next turn reads the OLD turn's message.delta /
+            # message.complete and "completes" in 0.01s with no real
+            # answer — the exact "user has to repeat themselves" turns in
+            # the log (repeated `ack=False, total=0.01s`). The gateway
+            # always returns the RPC ack before emitting events for a new
+            # turn, so anything pre-ack is stale by definition.
+            dropped_stale = 0
+            while True:
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=SUBMIT_ACK_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    hermes._invalidate_connection()
+                    raise RuntimeError(
+                        f"Hermes submit ack not received in {SUBMIT_ACK_TIMEOUT}s"
+                    ) from None
+
+                if isinstance(item, BaseException):
+                    hermes._invalidate_connection()
+                    raise RuntimeError(f"Hermes WS error: {item}") from item
+                if item is None:  # EOF sentinel
+                    hermes._invalidate_connection()
+                    raise RuntimeError("Hermes WS closed mid-turn")
+
+                try:
+                    data = json.loads(item)
+                except json.JSONDecodeError:
+                    continue
+
+                if data.get("id") == submit_id:
+                    if "error" in data:
+                        raise RuntimeError(f"Submit failed: {data['error']}")
+                    got_ack = True
+                    logger.info("Hermes submit ack: %s", data.get("result"))
+                    if dropped_stale:
+                        logger.info(
+                            "Drained %d stale event(s) from the previous turn",
+                            dropped_stale,
+                        )
+                    break
+
+                stale_type = (data.get("params") or {}).get("type", "?")
+                dropped_stale += 1
+                logger.debug("Dropping stale pre-ack event: %s", stale_type)
+
+            # Phase 2 — stream the real turn. A legitimate turn ALWAYS emits
+            # some content signal (message.start for a fresh turn — see the
+            # gateway's _run_prompt_submit — or a delta for a redirected
+            # turn) before its terminator. So a message.complete/turn_end
+            # that arrives with no preceding content is a leftover terminator
+            # from a barged-in turn; dropping it prevents the 0.01s fake
+            # completions that forced the user to repeat themselves.
+            seen_turn_signal = False
             while not turn_over:
                 item = await queue.get()
 
@@ -484,12 +569,9 @@ class HermesLLMStream(LLMStream):
                 except json.JSONDecodeError:
                     continue
 
-                # JSON-RPC response (ack or error)
-                if data.get("id") == submit_id:
-                    if "error" in data:
-                        raise RuntimeError(f"Submit failed: {data['error']}")
-                    got_ack = True
-                    logger.info("Hermes submit ack: %s", data.get("result"))
+                # JSON-RPC responses for other ids (e.g. a queued follow-up
+                # submit's ack) — ignore, not this turn's concern.
+                if data.get("id") is not None:
                     continue
 
                 if data.get("method") != "event":
@@ -499,9 +581,16 @@ class HermesLLMStream(LLMStream):
                 event_type = params.get("type")
                 payload = params.get("payload", {}) or {}
 
-                if event_type == "message.delta":
+                if event_type == "message.start":
+                    # Fresh-turn bracket from the gateway — everything from
+                    # here belongs to THIS submit.
+                    seen_turn_signal = True
+                elif event_type == "message.delta":
                     delta = payload.get("text", "")
                     if delta:
+                        # A delta is content even before message.start was
+                        # observed (redirected turns stream straight in).
+                        seen_turn_signal = True
                         if t_first_delta is None:
                             t_first_delta = loop.time()
                             logger.info(
@@ -525,11 +614,12 @@ class HermesLLMStream(LLMStream):
                                 await send_text(cleaned)
                                 pending_text = True
                 elif event_type == "thinking.delta":
+                    seen_turn_signal = True
                     # Thinking produces NO audio for the user — keep the
                     # silence timer running (v1 wrongly treated thinking
                     # activity as user-perceptible activity).
-                    pass
                 elif event_type == "tool.generating":
+                    seen_turn_signal = True
                     tool_name = payload.get("name", "?")
                     logger.info("Hermes tool started: %s", tool_name)
                     # UI progress row: "Searching the web…". The client keeps
@@ -545,6 +635,8 @@ class HermesLLMStream(LLMStream):
                         logger.info("Flushing pending text before tool: %s", tool_name)
                         await flush_segment()
                 elif event_type == "tool.complete":
+                    if not seen_turn_signal:
+                        continue  # stale tail of the barged-in turn
                     logger.info("Hermes tool complete")
                     hermes.publish_tool_activity("complete", "?")
                 elif event_type in (
@@ -552,6 +644,14 @@ class HermesLLMStream(LLMStream):
                     "turn.complete",
                     "session.turn_end",
                 ):
+                    if not seen_turn_signal:
+                        # Leftover terminator from a barged-in turn — ignore
+                        # it, the real turn's own message.start is coming.
+                        logger.info(
+                            "Dropping stale %s before any turn signal",
+                            event_type,
+                        )
+                        continue
                     logger.info(
                         "Hermes turn complete (event=%s, ack=%s, total=%.2fs)",
                         event_type,
@@ -560,7 +660,21 @@ class HermesLLMStream(LLMStream):
                     )
                     turn_over = True
                 elif event_type == "error":
+                    # An error event IS a turn signal: the gateway emits
+                    # error + message.complete (no message.start) when a
+                    # turn fails at startup — observed with an fd-exhausted
+                    # gateway: 'Error: ... Too many open files'. Dropping it
+                    # leaves the user in dead silence ("stuck on thinking").
+                    seen_turn_signal = True
                     logger.error("Hermes error event: %s", payload)
+                    if spoken_any is False:
+                        # Nothing was said yet — announce the failure instead
+                        # of ending in silence.
+                        await send_text(
+                            "[calm] Sorry, something failed on my end. "
+                            "Can you try that again?",
+                            flush_after=True,
+                        )
                     turn_over = True
         finally:
             reader.cancel()

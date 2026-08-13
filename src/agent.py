@@ -145,8 +145,18 @@ async def my_agent(ctx: JobContext):
         # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=deepgram.STT(model="nova-3", language="id"),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
+        # See all available models at https://docs.livekit.io/agents/models/tts/
         tts=inference.TTS(model="fishaudio/s2.1-pro-free", voice=voice_id),
+        # VAD: the bundled silero default uses min_silence_duration=0.25s — a
+        # 250ms pause (a normal quick breath!) already declares "speech ended",
+        # which kicks off the endpointing timer and splits one utterance into
+        # two turns. Log evidence (2026-08-14): "coba deep research" committed
+        # at a breath, then the remainder re-submitted as turn two; same for
+        # "rekap semua aktivitas" / "…semingga terakhir". 0.6s tolerates
+        # breaths and short thinking pauses; genuine end-of-speech still fires
+        # fast enough (endpointing.min_delay below adds the real grace).
+        # Cost: +350ms on true end-of-turn — masked by preemptive generation.
+        vad=inference.VAD(model="silero", min_silence_duration=0.6),
         turn_handling=TurnHandlingOptions(
             # The LiveKit turn detector determines when the user is done speaking and the agent should respond.
             # TurnDetector is an end-of-turn model that listens to the user's audio directly, combining
