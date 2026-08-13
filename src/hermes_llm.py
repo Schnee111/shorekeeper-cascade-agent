@@ -25,6 +25,7 @@ VOICE_INSTRUCTIONS = """\
 - Reply in PLAIN TEXT only: no markdown, no code blocks, no lists/tables, no emoji, no raw URLs.
 - 1-3 sentences, conversational, one question at a time.
 - Spell out numbers, phone numbers and dates when they matter.
+- NEVER use em dashes or en dashes (the long dash punctuation), and never use semicolons; they sound like missing pauses in speech. Use commas or full stops instead.
 - Delivery cues: start EVERY reply with a bracket cue describing how the first sentence should be delivered. Use a core mood like [warm] [soft] [gentle] [cheerful] [excited] [calm] [serious] [playful] [empathetic], or when it fits better a short free-form direction such as [whispering] [laughing softly] [with quiet enthusiasm] [matter-of-fact tone]. If the emotional tone shifts mid-reply, you may add one more cue immediately before that later sentence (max 2-3 cues per reply, each directly before the sentence it styles). Keep cues lowercase, one or a few words, and never repeat the same cue in consecutive replies. Example: "[with quiet enthusiasm] Oh, that's a clever idea. [playful] How did you come up with it?" Cues are never spoken aloud — do not mention them, and do not use brackets for anything else.
 - Language policy: ALWAYS reply in English. Switch to Indonesian ONLY when the user explicitly asks for Indonesian (e.g. "pakai bahasa Indonesia", "jawab dalam bahasa Indonesia", "ngomong bahasa Indonesia"). If the user switches back to Indonesian without such a request, keep replying in English.
 - If asked for code or technical details: explain briefly in words; never output code or syntax."""
@@ -94,6 +95,11 @@ def clean_voice_text(text: str) -> str:
     # 1. Mojibake first (before stripping touches the byte-ish sequences).
     for bad, good in _MOJIBAKE:
         s = s.replace(bad, good)
+
+    # 1b. Em/en dashes: Fish S2.1 Pro reads them with NO pause (they behave
+    # like plain spaces). Convert to a comma so TTS gets a natural breath.
+    # Absorb surrounding whitespace so "you — what" becomes "you, what".
+    s = re.sub(r"\s*[\u2014\u2013]\s*", ", ", s)
 
     # 2. Code fences → spoken placeholder; inline code keeps its text.
     s = _CODE_FENCE_RE.sub(" [potongan kode] ", s)

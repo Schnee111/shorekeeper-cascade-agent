@@ -90,11 +90,11 @@ server = AgentServer()
 # renders [bracket] prosody cues; the transcript drops them via
 # drop_bracket_cues. Rotate so repeated joins don't sound canned.
 GREETINGS = [
-    "[warm][soft] Hey, Schnee. Good to hear you — what are we getting into?",
-    "[gentle] Hi there, Schnee. All systems are calm — what do you need?",
-    "[soft] Hello again, Schnee. I'm listening — where do we start?",
+    "[warm][soft] Hey, Schnee. Good to hear you. What are we getting into?",
+    "[gentle] Hi there, Schnee. All systems are calm. What do you need?",
+    "[soft] Hello again, Schnee. I'm listening. Where do we start?",
     "[warm] Hey, Schnee. Nice to have you back. What can I help with?",
-    "[cheerful] Hi, Schnee. Everything's running smooth on my end — what's next?",
+    "[cheerful] Hi, Schnee. Everything's running smooth on my end. What's next?",
 ]
 
 
