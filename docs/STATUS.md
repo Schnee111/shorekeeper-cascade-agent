@@ -91,10 +91,10 @@ personal use; if usage grows, monitor the fallback warning in jarvis-agent logs.
 
 ```bash
 # Full voice E2E (TTS-synthesized user speech → agent audio reply)
-uv run --with edge-tts python test_e2e.py
+uv run --with edge-tts python tools/test_e2e.py
 
 # Raw gateway WS frame probe (diagnoses turn lifecycle)
-uv run --with websockets,python-dotenv python probe_ws_frames.py
+uv run --with websockets,python-dotenv python tools/probe_ws_frames.py
 ```
 
 ## Repos
