@@ -100,7 +100,7 @@ uv run --with websockets,python-dotenv python tools/probe_ws_frames.py
 ## Repos
 
 - `~/projects/jarvis-livekit` — **active**: LiveKit agent + bridge + token server
-- `~/projects/shorekeeper-jarvis` — superseded bun voice prototype (server kept
-  running on :3002 for `/jarvis/ws` nginx compat; state committed at d85176d4,
-  node_modules purged)
+- `~/projects/shorekeeper-jarvis` — superseded bun voice prototype. Fully
+  decommissioned 2026-08-14: bun server stopped, nginx `/jarvis/ws` route
+  removed. Code archived at commit d85176d4. Production is 100% LiveKit.
 - UI deploy: `rsync dist/ → /var/www/jarvis/` (client in shorekeeper-jarvis/client)
