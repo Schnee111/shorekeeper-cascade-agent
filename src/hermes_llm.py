@@ -388,7 +388,6 @@ class HermesLLMStream(LLMStream):
         got_ack = False
         turn_over = False
         sentence_buffer = ""
-        any_text_emitted = False
         fillers_sent = 0
         t_first_delta: float | None = None
         t_first_sentence: float | None = None
@@ -468,7 +467,6 @@ class HermesLLMStream(LLMStream):
                                 break
                             cleaned = clean_voice_text(sentence)
                             if cleaned:
-                                any_text_emitted = True
                                 if t_first_sentence is None:
                                     t_first_sentence = loop.time()
                                     logger.info(
@@ -482,16 +480,9 @@ class HermesLLMStream(LLMStream):
                 elif event_type == "tool.generating":
                     tool_name = payload.get("name", "?")
                     logger.info("Hermes tool started: %s", tool_name)
-                    # Contextual filler if nothing spoken yet.
-                    if (
-                        fillers_sent == 0
-                        and not any_text_emitted
-                        and not sentence_buffer
-                    ):
-                        await send_text(FILLER_TOOL)
-                        fillers_sent = 1
-                    if filler_deadline is not None and fillers_sent < MAX_FILLERS:
-                        filler_deadline = loop.time() + SECOND_FILLER_DELAY
+                    # FILLER_TOOL emission disabled along with the filler
+                    # engine (2026-08-13): it only prepended a spoken
+                    # sentence without overlapping the actual wait.
                 elif event_type == "tool.complete":
                     logger.info("Hermes tool complete")
                     if filler_deadline is not None and fillers_sent < MAX_FILLERS:
