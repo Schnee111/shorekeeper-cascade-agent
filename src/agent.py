@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import textwrap
 
@@ -12,7 +13,9 @@ from livekit.agents import (
     inference,
     room_io,
 )
-from livekit.plugins import ai_coustics
+from livekit.plugins import ai_coustics, deepgram
+
+from hermes_llm import HermesLLM
 
 logger = logging.getLogger("agent")
 
@@ -22,17 +25,8 @@ load_dotenv(".env.local")
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
-            # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-            # See all available models at https://docs.livekit.io/agents/models/llm/
-            llm=inference.LLM(model="google/gemma-4-31b-it"),
-            # To use a realtime model instead of a voice pipeline, replace the LLM
-            # with a RealtimeModel and remove the STT/TTS from the AgentSession
-            # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/)
-            # 1. Install livekit-agents[openai]
-            # 2. Set OPENAI_API_KEY in .env.local
-            # 3. Add `from livekit.plugins import openai` to the top of this file
-            # 4. Replace the llm argument with:
-            #     llm=openai.realtime.RealtimeModel(voice="marin")
+            # Custom LLM bridge to Hermes Agent
+            llm=HermesLLM(),
             instructions=textwrap.dedent(
                 """\
                 You are a friendly, reliable voice assistant that answers questions, explains topics, and completes tasks with available tools.
@@ -91,7 +85,7 @@ class Assistant(Agent):
 server = AgentServer()
 
 
-@server.rtc_session(agent_name="my-agent")
+@server.rtc_session(agent_name="jarvis")
 async def my_agent(ctx: JobContext):
     # Logging setup
     # Add any other context you want in all log entries here
@@ -103,11 +97,11 @@ async def my_agent(ctx: JobContext):
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=inference.STT(model="assemblyai/universal-3-5-pro", language="en"),
+        stt=deepgram.STT(model="nova-3", language="id"),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
         tts=inference.TTS(
-            model="fishaudio/s2.1-pro", voice="fa4c9eb3dccc4806b382b40d61c6b10a"
+            model="fishaudio/s2.1-pro-free", voice="3095f8e1d1fa4b82acaa8aca720a7f83"
         ),
         turn_handling=TurnHandlingOptions(
             # The LiveKit turn detector determines when the user is done speaking and the agent should respond.
@@ -127,7 +121,11 @@ async def my_agent(ctx: JobContext):
         # emits inline delivery tags (emotion, pacing, non-verbal sounds) that the TTS renders and
         # the transcript never shows. Requires a TTS model that supports markup, such as the Fish
         # Audio model above.
-        expressive=True,
+        # Expressive mode is DISABLED on purpose: its markup guide is injected
+        # into the LiveKit-side instructions, which NEVER reach Hermes (the
+        # bridge only forwards the last user message). Voice formatting is
+        # handled by the VOICE_INSTRUCTIONS prepended in hermes_llm.py.
+        expressive=False,
     )
 
     # Start the session, which initializes the voice pipeline and warms up the models
@@ -156,6 +154,19 @@ async def my_agent(ctx: JobContext):
 
     # Join the room and connect to the user
     await ctx.connect()
+
+    # Auto-greeting once the user joins (plan §2: greeting on join).
+    # Bounded wait so a failed client join doesn't hang the agent forever.
+    try:
+        participant = await asyncio.wait_for(
+            ctx.wait_for_participant(identity="schnee"), timeout=30.0
+        )
+        logger.info("Participant joined: %s — sending greeting", participant.identity)
+        await session.say("Halo! Aku JARVIS, ada yang bisa dibantu?")
+    except asyncio.TimeoutError:
+        logger.warning("No participant joined within 30s — skipping greeting")
+    except Exception:
+        logger.exception("Greeting failed")
 
 
 if __name__ == "__main__":
