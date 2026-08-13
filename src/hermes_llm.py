@@ -251,6 +251,10 @@ class HermesLLM(llm.LLM):
         # Prefer env (set in .env.local); fallback keeps old setups working.
         self._token = token or os.environ.get("HERMES_WS_TOKEN", "")
         self._ws: Any = None
+        # Room handle for publishing tool-activity events to the UI chip
+        # (Gemini/Claude-style "Searching the web…" indicator). Bound by
+        # agent.py after session.start().
+        self._room: Any = None
         self._session_id: str | None = None
         self._message_id = 0
         # Serializes WS protocol traffic only (short-lived), NOT the full stream
@@ -262,6 +266,30 @@ class HermesLLM(llm.LLM):
         # read guarantees a single reader at a time; a barged-in turn's stream
         # is cancelled by the framework, releasing the lock for the next turn.
         self._turn_lock = asyncio.Lock()
+
+    def bind_room(self, room: Any) -> None:
+        """Attach the LiveKit room so tool-activity events can be published."""
+        self._room = room
+
+    def publish_tool_activity(self, state: str, tool_name: str) -> None:
+        """Best-effort publish of tool start/end to the room.
+
+        The UI renders this as a Gemini/Claude-style activity chip
+        ("Searching the web…"). Never fatal: the voice path must keep
+        working if the room is gone.
+        """
+        room = self._room
+        if room is None:
+            return
+        try:
+            payload = json.dumps(
+                {"type": "jarvis.tool", "state": state, "name": tool_name}
+            )
+            asyncio.get_running_loop().create_task(
+                room.local_participant.publish_data(payload, reliable=True)
+            )
+        except Exception:
+            logger.debug("publish_tool_activity failed", exc_info=True)
 
     @property
     def model(self) -> str:
@@ -565,6 +593,8 @@ class HermesLLMStream(LLMStream):
                 elif event_type == "tool.generating":
                     tool_name = payload.get("name", "?")
                     logger.info("Hermes tool started: %s", tool_name)
+                    # UI activity chip: "Searching the web…" while running.
+                    hermes.publish_tool_activity("start", tool_name)
                     # Release any text still held in the TTS sentence buffer
                     # (e.g. the opening "I'll check..." sentence) so it is
                     # synthesized and plays WHILE the tool runs.
@@ -601,6 +631,7 @@ class HermesLLMStream(LLMStream):
                         filler_deadline = loop.time() + SECOND_FILLER_DELAY
                 elif event_type == "tool.complete":
                     logger.info("Hermes tool complete")
+                    hermes.publish_tool_activity("complete", "?")
                     # Post-tool safety net: the second LLM pass (composing
                     # the answer) takes 2-4s measured; if nothing streams
                     # within POST_TOOL_FILLER_DELAY, a filler covers it.

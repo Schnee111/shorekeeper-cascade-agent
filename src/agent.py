@@ -24,10 +24,11 @@ load_dotenv(".env.local")
 
 
 class Assistant(Agent):
-    def __init__(self) -> None:
+    def __init__(self, hermes: HermesLLM | None = None) -> None:
         super().__init__(
-            # Custom LLM bridge to Hermes Agent
-            llm=HermesLLM(),
+            # Custom LLM bridge to Hermes Agent (shared instance so the
+            # session can bind the room for tool-activity events).
+            llm=hermes or HermesLLM(),
             instructions=textwrap.dedent(
                 """\
                 You are a friendly, reliable voice assistant that answers questions, explains topics, and completes tasks with available tools.
@@ -191,9 +192,13 @@ async def my_agent(ctx: JobContext):
         expressive=False,
     )
 
+    # Shared Hermes bridge: created before the agent so the session can
+    # bind the room after start() (tool-activity chip events → client).
+    hermes = HermesLLM()
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(),
+        agent=Assistant(hermes),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -203,6 +208,9 @@ async def my_agent(ctx: JobContext):
             ),
         ),
     )
+
+    # Let the bridge publish tool-activity events (UI chip) to this room.
+    hermes.bind_room(ctx.room)
 
     # # Add a virtual avatar to the session, if desired
     # # For other providers, see https://docs.livekit.io/agents/models/avatar/

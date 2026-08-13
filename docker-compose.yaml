@@ -1,0 +1,11 @@
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --dev --bind 0.0.0.0
+    ports:
+      - "7880:7880"   # HTTP/WebSocket
+      - "7881:7881"   # RTC TCP
+      - "7882:7882/udp" # RTC UDP
+    environment:
+      LIVEKIT_KEYS: "devkey: secret"
+    restart: unless-stopped
