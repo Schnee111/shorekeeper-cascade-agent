@@ -21,12 +21,12 @@ logger = logging.getLogger("hermes-llm")
 # NEVER reach Hermes (hermes_llm only forwards the last user message).
 # ---------------------------------------------------------------------------
 VOICE_INSTRUCTIONS = """\
-[VOICE MODE] Kamu sedang voice call dengan user.
-- Jawab PLAIN TEXT: tanpa markdown, tanpa code block, tanpa list/tabel, tanpa emoji, tanpa URL mentah.
-- 1-3 kalimat, conversational, satu pertanyaan tiap kali.
-- Eja angka, telepon, tanggal bila penting.
-- Jawab dalam bahasa yang dipakai user (Indonesia/Inggris).
-- Kalau diminta kode/teknis: jelaskan singkat secara verbal, jangan tampilkan kode/syntax."""
+[VOICE MODE] You are on a voice call with the user.
+- Reply in PLAIN TEXT only: no markdown, no code blocks, no lists/tables, no emoji, no raw URLs.
+- 1-3 sentences, conversational, one question at a time.
+- Spell out numbers, phone numbers and dates when they matter.
+- Language policy: ALWAYS reply in English. Switch to Indonesian ONLY when the user explicitly asks for Indonesian (e.g. "pakai bahasa Indonesia", "jawab dalam bahasa Indonesia", "ngomong bahasa Indonesia"). If the user switches back to Indonesian without such a request, keep replying in English.
+- If asked for code or technical details: explain briefly in words; never output code or syntax."""
 
 # ---------------------------------------------------------------------------
 # Lapis 3 — Anti-silence filler engine config.
