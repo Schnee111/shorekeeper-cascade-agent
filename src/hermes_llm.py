@@ -30,6 +30,8 @@ VOICE_INSTRUCTIONS = """\
 
 # ---------------------------------------------------------------------------
 # Lapis 3 — Anti-silence filler engine config.
+# DISABLED (2026-08-13): fillers only added an extra sentence up front
+# without overlapping the processing wait — see _run_turn() (filler_deadline).
 # ---------------------------------------------------------------------------
 FIRST_FILLER_DELAY = 2.0  # seconds of silence after submit before filler 1
 SECOND_FILLER_DELAY = 10.0  # more silence after filler 1 before filler 2
@@ -390,8 +392,11 @@ class HermesLLMStream(LLMStream):
         fillers_sent = 0
         t_first_delta: float | None = None
         t_first_sentence: float | None = None
-        # Lapis 3: arm the first filler timer at submit time.
-        filler_deadline: float | None = loop.time() + FIRST_FILLER_DELAY
+        # Lapis 3 (filler engine) DISABLED 2026-08-13: in practice it only
+        # prepends "Bentar ya, aku cek dulu..." to the spoken answer — TTS
+        # still blocks until the real response streams, so the filler never
+        # overlaps the wait. Re-arm with `loop.time() + FIRST_FILLER_DELAY`.
+        filler_deadline: float | None = None
 
         try:
             while not turn_over:
