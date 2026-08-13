@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import textwrap
 
 from dotenv import load_dotenv
@@ -83,6 +84,18 @@ class Assistant(Agent):
 
 
 server = AgentServer()
+
+
+# Greeting pool, addressed to the user (Schnee). Fish Audio S2.1-pro-free
+# renders [bracket] prosody cues; the transcript drops them via
+# drop_bracket_cues. Rotate so repeated joins don't sound canned.
+GREETINGS = [
+    "[warm][soft] Hey, Schnee. Good to hear you — what are we getting into?",
+    "[gentle] Hi there, Schnee. All systems are calm — what do you need?",
+    "[soft] Hello again, Schnee. I'm listening — where do we start?",
+    "[warm] Hey, Schnee. Nice to have you back. What can I help with?",
+    "[cheerful] Hi, Schnee. Everything's running smooth on my end — what's next?",
+]
 
 
 @server.rtc_session(agent_name="jarvis")
@@ -182,7 +195,9 @@ async def my_agent(ctx: JobContext):
             ctx.wait_for_participant(identity="schnee"), timeout=30.0
         )
         logger.info("Participant joined: %s — sending greeting", participant.identity)
-        await session.say("Hello! I'm Shorekeeper. How can I help you today?")
+        greeting = random.choice(GREETINGS)
+        logger.info("Greeting: %s", greeting)
+        await session.say(greeting)
     except asyncio.TimeoutError:
         logger.warning("No participant joined within 30s — skipping greeting")
     except Exception:
