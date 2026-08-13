@@ -197,6 +197,13 @@ class HermesLLM(llm.LLM):
         self._message_id = 0
         # Serializes WS protocol traffic only (short-lived), NOT the full stream
         self._ws_lock = asyncio.Lock()
+        # Serializes the whole turn lifecycle (submit + WS read loop). Without
+        # this, a second turn submitted while the first is still streaming
+        # spawns a second `_ws_reader`, and two concurrent `ws.recv()` calls
+        # raise websockets.ConcurrencyError. Holding the lock across submit +
+        # read guarantees a single reader at a time; a barged-in turn's stream
+        # is cancelled by the framework, releasing the lock for the next turn.
+        self._turn_lock = asyncio.Lock()
 
     @property
     def model(self) -> str:
@@ -326,6 +333,18 @@ class HermesLLMStream(LLMStream):
             logger.warning("No user text found in chat context")
             return
 
+        # Serialize the whole turn (submit + read loop) so overlapping turns
+        # never spawn concurrent `_ws_reader` tasks on the same socket.
+        async with hermes._turn_lock:
+            await self._run_turn(hermes, session_id, user_text, loop)
+
+    async def _run_turn(
+        self,
+        hermes: "HermesLLM",
+        session_id: str,
+        user_text: str,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
         # Lapis 1: prepend voice instructions (LiveKit `instructions=` never
         # reach Hermes — verified in code).
         submit_text = VOICE_INSTRUCTIONS + "\n\n" + user_text
