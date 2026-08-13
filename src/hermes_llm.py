@@ -334,6 +334,8 @@ class HermesLLMStream(LLMStream):
         hermes._message_id += 1
         submit_id = hermes._message_id
 
+        t_submit = loop.time()
+
         async with hermes._ws_lock:
             await hermes._ws.send(
                 json.dumps(
@@ -351,10 +353,14 @@ class HermesLLMStream(LLMStream):
         reader = asyncio.create_task(_ws_reader(hermes._ws, queue))
 
         async def send_text(text: str) -> None:
+            # Always terminate chunks on whitespace: the voice pipeline
+            # concatenates deltas, so "satu." + "Dua" would become "satu.Dua"
+            # — Fish TTS spells the glued token letter-by-letter and the
+            # transcript shows the missing space.
             await self._event_ch.send(
                 ChatChunk(
                     id="hermes",
-                    delta=ChoiceDelta(role="assistant", content=text),
+                    delta=ChoiceDelta(role="assistant", content=text + " "),
                 )
             )
 
@@ -363,6 +369,8 @@ class HermesLLMStream(LLMStream):
         sentence_buffer = ""
         any_text_emitted = False
         fillers_sent = 0
+        t_first_delta: float | None = None
+        t_first_sentence: float | None = None
         # Lapis 3: arm the first filler timer at submit time.
         filler_deadline: float | None = loop.time() + FIRST_FILLER_DELAY
 
@@ -421,6 +429,12 @@ class HermesLLMStream(LLMStream):
                 if event_type == "message.delta":
                     delta = payload.get("text", "")
                     if delta:
+                        if t_first_delta is None:
+                            t_first_delta = loop.time()
+                            logger.info(
+                                "Hermes TTFT: %.2fs after submit",
+                                t_first_delta - t_submit,
+                            )
                         filler_deadline = None  # real text flowing → no fillers
                         sentence_buffer += delta
                         # Lapis 2: cut complete sentences, clean, yield.
@@ -431,6 +445,12 @@ class HermesLLMStream(LLMStream):
                             cleaned = clean_voice_text(sentence)
                             if cleaned:
                                 any_text_emitted = True
+                                if t_first_sentence is None:
+                                    t_first_sentence = loop.time()
+                                    logger.info(
+                                        "First sentence to TTS: %.2fs after submit",
+                                        t_first_sentence - t_submit,
+                                    )
                                 await send_text(cleaned)
                 elif event_type == "thinking.delta":
                     # Activity within the window → cancel filler (normal path).
@@ -458,7 +478,10 @@ class HermesLLMStream(LLMStream):
                     "session.turn_end",
                 ):
                     logger.info(
-                        "Hermes turn complete (event=%s, ack=%s)", event_type, got_ack
+                        "Hermes turn complete (event=%s, ack=%s, total=%.2fs)",
+                        event_type,
+                        got_ack,
+                        loop.time() - t_submit,
                     )
                     turn_over = True
                 elif event_type == "error":
