@@ -109,7 +109,22 @@ async def my_agent(ctx: JobContext):
             # semantic understanding with acoustic cues (intonation, pitch, rhythm) for state-of-the-art accuracy.
             # AgentSession supplies the required VAD automatically.
             # See more at https://docs.livekit.io/agents/build/turns
-            turn_detection=inference.TurnDetector(),
+            #
+            # unlikely_threshold raised for id/en (defaults 0.345/0.36): when the
+            # end-of-turn probability clears the threshold, the turn commits after
+            # just `endpointing.min_delay`. The defaults commit on weak evidence, so
+            # a mid-sentence breath splits one utterance into several turns — each
+            # fragment becomes a separate prompt.submit to Hermes (log evidence:
+            # repeated one-word turns; "transcript arrives after turn committed").
+            # Higher bar → wait for the max_delay instead of committing early.
+            turn_detection=inference.TurnDetector(
+                unlikely_threshold={"id": 0.45, "en": 0.45}
+            ),
+            # Grace period after end-of-turn detection. Streaming default is 0.3s —
+            # Deepgram finals sometimes land later than that and get cut off.
+            # preemptive_generation (below) already starts the LLM while we wait,
+            # so the extra delay barely touches perceived latency.
+            endpointing={"min_delay": 0.7},
             # Adaptive interruptions use the turn detector to tell a real interruption from a
             # backchannel like "mhm" or "right", so the agent keeps talking through the latter.
             interruption={"mode": "adaptive"},
