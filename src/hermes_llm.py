@@ -42,8 +42,8 @@ VOICE_INSTRUCTIONS = """\
 # Triggers: tool.generating → immediate ack; pure silence > deadline →
 # timer fillers. Randomized, English, with Fish delivery cues.
 # ---------------------------------------------------------------------------
-FIRST_FILLER_DELAY = 4.5  # pure silence (no tool, no text) before filler 1
-SECOND_FILLER_DELAY = 12.0  # still silent after filler 1 / tool ack
+FIRST_FILLER_DELAY = 3.0  # pure silence (no tool, no text) before filler 1
+SECOND_FILLER_DELAY = 8.0  # still silent after filler 1 / tool ack
 MAX_FILLERS = 2
 FILLER_FIRST = [
     "[calm] One second, let me think.",
@@ -415,7 +415,6 @@ class HermesLLMStream(LLMStream):
         turn_over = False
         sentence_buffer = ""
         fillers_sent = 0
-        tool_ack_sent = False
         t_first_delta: float | None = None
         t_first_sentence: float | None = None
         # Lapis 3 v2 (RE-ENABLED): arm the silence timer at submit. Tool
@@ -511,11 +510,13 @@ class HermesLLMStream(LLMStream):
                     logger.info("Hermes tool started: %s", tool_name)
                     # Speak immediately: the ack is synthesized while the
                     # tool is still executing, so the voice OVERLAPS the
-                    # wait. Once per turn, only before real text flows.
-                    if filler_deadline is not None and not tool_ack_sent:
+                    # wait. Fire ONLY if nothing was spoken yet this turn
+                    # (no real text — those cancel the timer — and no
+                    # timer filler, else the user hears two back-to-back
+                    # acknowledgments).
+                    if filler_deadline is not None and fillers_sent == 0:
                         logger.info("Tool ack before: %s", tool_name)
                         await send_text(random.choice(FILLER_TOOL))
-                        tool_ack_sent = True
                         fillers_sent += 1
                         filler_deadline = loop.time() + SECOND_FILLER_DELAY
                 elif event_type == "tool.complete":
