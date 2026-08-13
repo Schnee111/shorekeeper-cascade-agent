@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import os
+import random
 import re
 from typing import Any
 
@@ -28,19 +29,37 @@ VOICE_INSTRUCTIONS = """\
 - NEVER use em dashes or en dashes (the long dash punctuation), and never use semicolons; they sound like missing pauses in speech. Use commas or full stops instead.
 - Delivery cues: start EVERY reply with a bracket cue describing how the first sentence should be delivered. Use a core mood like [warm] [soft] [gentle] [cheerful] [excited] [calm] [serious] [playful] [empathetic], or when it fits better a short free-form direction such as [whispering] [laughing softly] [with quiet enthusiasm] [matter-of-fact tone]. If the emotional tone shifts mid-reply, you may add one more cue immediately before that later sentence (max 2-3 cues per reply, each directly before the sentence it styles). Keep cues lowercase, one or a few words, and never repeat the same cue in consecutive replies. Example: "[with quiet enthusiasm] Oh, that's a clever idea. [playful] How did you come up with it?" Cues are never spoken aloud — do not mention them, and do not use brackets for anything else.
 - Language policy: ALWAYS reply in English. Switch to Indonesian ONLY when the user explicitly asks for Indonesian (e.g. "pakai bahasa Indonesia", "jawab dalam bahasa Indonesia", "ngomong bahasa Indonesia"). If the user switches back to Indonesian without such a request, keep replying in English.
+- When you need to look something up, search, or run any tool: FIRST speak one short natural sentence about what you're checking (e.g. "Let me take a quick look.", "Give me a second to check that."), THEN run the tool. Never go silent while a tool is working.
 - If asked for code or technical details: explain briefly in words; never output code or syntax."""
 
 # ---------------------------------------------------------------------------
-# Lapis 3 — Anti-silence filler engine config.
-# DISABLED (2026-08-13): fillers only added an extra sentence up front
-# without overlapping the processing wait — see _run_turn() (filler_deadline).
+# Lapis 3 — Anti-silence filler engine (RE-ENABLED 2026-08-13, v2).
+# Tool calls are silent: Hermes emits NO text deltas while a tool runs, so
+# the user hears nothing for 10-30s. The pipeline starts TTS synthesis on
+# the FIRST stream chunk (agent_activity._produce_segments), so an ack
+# emitted at tool start is spoken while the tool is still executing — the
+# voice overlaps the wait instead of prepending to it.
+# Triggers: tool.generating → immediate ack; pure silence > deadline →
+# timer fillers. Randomized, English, with Fish delivery cues.
 # ---------------------------------------------------------------------------
-FIRST_FILLER_DELAY = 2.0  # seconds of silence after submit before filler 1
-SECOND_FILLER_DELAY = 10.0  # more silence after filler 1 before filler 2
+FIRST_FILLER_DELAY = 4.5  # pure silence (no tool, no text) before filler 1
+SECOND_FILLER_DELAY = 12.0  # still silent after filler 1 / tool ack
 MAX_FILLERS = 2
-FILLER_FIRST = "Bentar ya, aku cek dulu..."
-FILLER_TOOL = "Aku lagi coba cek, sebentar..."
-FILLER_SECOND = "Masih aku proses, sebentar lagi..."
+FILLER_FIRST = [
+    "[calm] One second, let me think.",
+    "[soft] Hmm, give me a moment.",
+    "[gentle] Let me think about that for a second.",
+]
+FILLER_TOOL = [
+    "[warm] Let me check on that real quick.",
+    "[calm] Give me a second, I'm looking into it.",
+    "[soft] One moment, let me pull that up.",
+]
+FILLER_SECOND = [
+    "[calm] Still working on it, hang tight.",
+    "[soft] Almost there, just a little more.",
+    "[gentle] This is taking a moment, thanks for waiting.",
+]
 
 # ---------------------------------------------------------------------------
 # Lapis 2 — Sentence splitter + cleaner (TTS safety net).
@@ -396,13 +415,14 @@ class HermesLLMStream(LLMStream):
         turn_over = False
         sentence_buffer = ""
         fillers_sent = 0
+        tool_ack_sent = False
         t_first_delta: float | None = None
         t_first_sentence: float | None = None
-        # Lapis 3 (filler engine) DISABLED 2026-08-13: in practice it only
-        # prepends "Bentar ya, aku cek dulu..." to the spoken answer — TTS
-        # still blocks until the real response streams, so the filler never
-        # overlaps the wait. Re-arm with `loop.time() + FIRST_FILLER_DELAY`.
-        filler_deadline: float | None = None
+        # Lapis 3 v2 (RE-ENABLED): arm the silence timer at submit. Tool
+        # execution and long reasoning emit ZERO text deltas; the pipeline
+        # starts TTS on the first chunk, so a filler emitted here overlaps
+        # the wait instead of prepending to it (v1's analysis was wrong).
+        filler_deadline: float | None = loop.time() + FIRST_FILLER_DELAY
 
         try:
             while not turn_over:
@@ -414,15 +434,15 @@ class HermesLLMStream(LLMStream):
                 except asyncio.TimeoutError:
                     # Silence exceeded deadline → emit next filler.
                     if fillers_sent == 0:
-                        logger.info("Filler 1 after %.0fs silence", FIRST_FILLER_DELAY)
-                        await send_text(FILLER_FIRST)
+                        logger.info("Filler 1 after %.1fs silence", FIRST_FILLER_DELAY)
+                        await send_text(random.choice(FILLER_FIRST))
                         fillers_sent = 1
                         filler_deadline = loop.time() + SECOND_FILLER_DELAY
                     elif fillers_sent < MAX_FILLERS:
                         logger.info(
-                            "Filler 2 after %.0fs more silence", SECOND_FILLER_DELAY
+                            "Filler 2 after %.1fs more silence", SECOND_FILLER_DELAY
                         )
-                        await send_text(FILLER_SECOND)
+                        await send_text(random.choice(FILLER_SECOND))
                         fillers_sent += 1
                         filler_deadline = None
                     else:
@@ -482,14 +502,22 @@ class HermesLLMStream(LLMStream):
                                     )
                                 await send_text(cleaned)
                 elif event_type == "thinking.delta":
-                    # Activity within the window → cancel filler (normal path).
-                    filler_deadline = None
+                    # Thinking produces NO audio for the user — keep the
+                    # silence timer running (v1 wrongly treated thinking
+                    # activity as user-perceptible activity).
+                    pass
                 elif event_type == "tool.generating":
                     tool_name = payload.get("name", "?")
                     logger.info("Hermes tool started: %s", tool_name)
-                    # FILLER_TOOL emission disabled along with the filler
-                    # engine (2026-08-13): it only prepended a spoken
-                    # sentence without overlapping the actual wait.
+                    # Speak immediately: the ack is synthesized while the
+                    # tool is still executing, so the voice OVERLAPS the
+                    # wait. Once per turn, only before real text flows.
+                    if filler_deadline is not None and not tool_ack_sent:
+                        logger.info("Tool ack before: %s", tool_name)
+                        await send_text(random.choice(FILLER_TOOL))
+                        tool_ack_sent = True
+                        fillers_sent += 1
+                        filler_deadline = loop.time() + SECOND_FILLER_DELAY
                 elif event_type == "tool.complete":
                     logger.info("Hermes tool complete")
                     if filler_deadline is not None and fillers_sent < MAX_FILLERS:
