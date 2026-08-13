@@ -8,13 +8,29 @@ import re
 from typing import Any
 
 import websockets
-from livekit.agents import llm
+from livekit.agents import FlushSentinel, llm
 from livekit.agents.llm import ChatChunk, ChatContext, ChoiceDelta, LLMStream
 
 # Default connection options matching base LLM.chat signature
 from livekit.agents.llm.llm import DEFAULT_API_CONNECT_OPTIONS
 
 logger = logging.getLogger("hermes-llm")
+
+
+class _VoiceFlush(FlushSentinel):
+    """FlushSentinel with a no-op `.id`/`.delta` surface.
+
+    The SDK routes FlushSentinel from an LLM stream straight into the TTS
+    segment pipeline (isinstance check), but its metrics monitor tees the
+    same channel and reads `ev.id` on every event — a bare FlushSentinel
+    would crash it mid-turn. This subclass keeps isinstance routing while
+    satisfying the monitor.
+    """
+
+    id: str = ""
+    delta: object = None
+    usage: object = None
+
 
 # ---------------------------------------------------------------------------
 # Lapis 1 — Voice instructions (plan ui-integration.md §4).
@@ -413,8 +429,8 @@ class HermesLLMStream(LLMStream):
         queue: asyncio.Queue = asyncio.Queue()
         reader = asyncio.create_task(_ws_reader(hermes._ws, queue))
 
-        async def send_text(text: str) -> None:
-            nonlocal spoken_any, t_last_spoken
+        async def send_text(text: str, *, flush_after: bool = False) -> None:
+            nonlocal spoken_any, t_last_spoken, pending_text
             spoken_any = True
             t_last_spoken = loop.time()
             # Always terminate chunks on whitespace: the voice pipeline
@@ -427,6 +443,22 @@ class HermesLLMStream(LLMStream):
                     delta=ChoiceDelta(role="assistant", content=text + " "),
                 )
             )
+            if flush_after:
+                await flush_segment()
+
+        async def flush_segment() -> None:
+            """Force the pipeline to close the current speech segment NOW.
+
+            The TTS sentence tokenizer holds the LAST sentence until more
+            text arrives or the turn ends — the exact reason fillers and
+            the opening sentence used to be glued onto the final answer
+            (verified: probe_tts_streaming.py / probe_tokenizer.py). A
+            FlushSentinel ends the segment: its TTS channel closes and
+            synthesis starts immediately.
+            """
+            nonlocal pending_text
+            pending_text = False
+            await self._event_ch.send(_VoiceFlush())
 
         got_ack = False
         turn_over = False
@@ -434,6 +466,7 @@ class HermesLLMStream(LLMStream):
         timer_fillers_sent = 0
         tool_acks_sent = 0
         spoken_any = False
+        pending_text = False  # text emitted since the last FlushSentinel
         t_last_spoken = loop.time()
         t_first_delta: float | None = None
         t_first_sentence: float | None = None
@@ -460,7 +493,7 @@ class HermesLLMStream(LLMStream):
                             timer_fillers_sent + 1,
                             "first" if not spoken_any else "second",
                         )
-                        await send_text(random.choice(pool))
+                        await send_text(random.choice(pool), flush_after=True)
                         timer_fillers_sent += 1
                         filler_deadline = (
                             loop.time() + SECOND_FILLER_DELAY
@@ -523,6 +556,7 @@ class HermesLLMStream(LLMStream):
                                         t_first_sentence - t_submit,
                                     )
                                 await send_text(cleaned)
+                                pending_text = True
                 elif event_type == "thinking.delta":
                     # Thinking produces NO audio for the user — keep the
                     # silence timer running (v1 wrongly treated thinking
@@ -531,6 +565,12 @@ class HermesLLMStream(LLMStream):
                 elif event_type == "tool.generating":
                     tool_name = payload.get("name", "?")
                     logger.info("Hermes tool started: %s", tool_name)
+                    # Release any text still held in the TTS sentence buffer
+                    # (e.g. the opening "I'll check..." sentence) so it is
+                    # synthesized and plays WHILE the tool runs.
+                    if pending_text:
+                        logger.info("Flushing pending text before tool: %s", tool_name)
+                        await flush_segment()
                     # Speak immediately: the ack is synthesized while the
                     # tool is still executing, so the voice OVERLAPS the
                     # wait. Silence-keyed (not once-per-turn) so every leg
@@ -553,7 +593,7 @@ class HermesLLMStream(LLMStream):
                             tool_name,
                             silence,
                         )
-                        await send_text(random.choice(pool))
+                        await send_text(random.choice(pool), flush_after=True)
                         tool_acks_sent += 1
                     # Stall guard: if nothing arrives for a long while even
                     # with tool events flowing, the timer still speaks up.
