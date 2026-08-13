@@ -23,9 +23,24 @@ async def voices_list(request):
         text=json.dumps(
             {
                 "voices": [
-                    {"id": "gura", "label": "Gura", "default": True},
-                    {"id": "gura2", "label": "Gura (alt)", "default": False},
-                    {"id": "zeta", "label": "Zeta", "default": False},
+                    {
+                        "id": "gura",
+                        "label": "Gura",
+                        "desc": "Energetic · EN",
+                        "default": True,
+                    },
+                    {
+                        "id": "gura2",
+                        "label": "Gura (alt)",
+                        "desc": "Alt clone · EN",
+                        "default": False,
+                    },
+                    {
+                        "id": "zeta",
+                        "label": "Zeta",
+                        "desc": "Calm · ID/EN",
+                        "default": False,
+                    },
                 ]
             }
         ),
