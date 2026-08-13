@@ -182,7 +182,7 @@ async def my_agent(ctx: JobContext):
             ctx.wait_for_participant(identity="schnee"), timeout=30.0
         )
         logger.info("Participant joined: %s — sending greeting", participant.identity)
-        await session.say("Halo! Aku JARVIS, ada yang bisa dibantu?")
+        await session.say("Hello! I'm Shorekeeper. How can I help you today?")
     except asyncio.TimeoutError:
         logger.warning("No participant joined within 30s — skipping greeting")
     except Exception:
