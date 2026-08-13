@@ -98,6 +98,15 @@ GREETINGS = [
 ]
 
 
+# Voice registry mirrors token_server.py — the client passes ?voice=<key>,
+# the token server embeds the Fish Audio voice ID as a JWT attribute, and
+# we read it from the participant once they join (ctx.token_claims() is the
+# AGENT's dispatch token, not the user's — attributes live on the
+# participant object). Hot-swapping TTS mid-session isn't available in
+# livekit-agents 1.6.9, so a voice change reconnects the room.
+FALLBACK_VOICE = "2bddc7ca0d5c4973b08aacd476ba2fae"  # gura
+
+
 @server.rtc_session(agent_name="jarvis")
 async def my_agent(ctx: JobContext):
     # Logging setup
@@ -106,6 +115,29 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
+    # Join the room and connect to the user
+    await ctx.connect()
+
+    # Resolve the voice from the participant's token attributes. The client
+    # picks ?voice=<key>, the token server embeds the Fish Audio voice ID,
+    # and it lands on the participant object once they join.
+    voice_id = FALLBACK_VOICE
+    participant = None
+    try:
+        participant = await asyncio.wait_for(
+            ctx.wait_for_participant(identity="schnee"), timeout=30.0
+        )
+        voice_id = (participant.attributes or {}).get("voice") or FALLBACK_VOICE
+        logger.info(
+            "Participant joined: %s — voice attribute: %s",
+            participant.identity,
+            voice_id,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("No participant joined within 30s — using fallback voice")
+    except Exception:
+        logger.exception("Failed to read participant voice; using fallback")
+
     # Set up a voice AI pipeline using AssemblyAI, Fish Audio, and the LiveKit turn detector
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
@@ -113,9 +145,7 @@ async def my_agent(ctx: JobContext):
         stt=deepgram.STT(model="nova-3", language="id"),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        tts=inference.TTS(
-            model="fishaudio/s2.1-pro-free", voice="3095f8e1d1fa4b82acaa8aca720a7f83"
-        ),
+        tts=inference.TTS(model="fishaudio/s2.1-pro-free", voice=voice_id),
         turn_handling=TurnHandlingOptions(
             # The LiveKit turn detector determines when the user is done speaking and the agent should respond.
             # TurnDetector is an end-of-turn model that listens to the user's audio directly, combining
@@ -185,23 +215,15 @@ async def my_agent(ctx: JobContext):
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
 
-    # Join the room and connect to the user
-    await ctx.connect()
-
     # Auto-greeting once the user joins (plan §2: greeting on join).
-    # Bounded wait so a failed client join doesn't hang the agent forever.
-    try:
-        participant = await asyncio.wait_for(
-            ctx.wait_for_participant(identity="schnee"), timeout=30.0
-        )
-        logger.info("Participant joined: %s — sending greeting", participant.identity)
-        greeting = random.choice(GREETINGS)
-        logger.info("Greeting: %s", greeting)
-        await session.say(greeting)
-    except asyncio.TimeoutError:
-        logger.warning("No participant joined within 30s — skipping greeting")
-    except Exception:
-        logger.exception("Greeting failed")
+    # The participant was already resolved during voice selection above.
+    if participant is not None:
+        try:
+            greeting = random.choice(GREETINGS)
+            logger.info("Sending greeting: %s", greeting)
+            await session.say(greeting)
+        except Exception:
+            logger.exception("Greeting failed")
 
 
 if __name__ == "__main__":
