@@ -93,6 +93,18 @@ _EMOJI_RE = re.compile(
 _ZERO_WIDTH_RE = re.compile("[\u200b-\u200f\u2060\ufeff\u00ad]")
 _CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f]")
 _REPEAT_PUNCT_RE = re.compile(r"([!?])\1+")
+
+# Hermes gateway steering scaffolds — internal machinery the core writes into
+# its own history when a live turn gets redirected/interrupted mid-flight
+# (agent/conversation_loop.py). The model sometimes echoes this scaffolding
+# back in its next reply, and replay paths can stream it to us. It must never
+# reach TTS or the user's transcript (2026-08-14: observed leaking into the
+# chat as "[interruption..]" blocks after redirected turns).
+_SCAFFOLD_MARKERS = (
+    "this response was interrupted by a user correction",
+    "visible response before the interruption",
+    "context from the interrupted assistant response",
+)
 _MOJIBAKE: list[tuple[str, str]] = [
     ("\u00e2\u20ac\u201d", "-"),  # â€" → -
     ("\u00e2\u20ac\u201c", "-"),  # â€" → -
@@ -105,6 +117,13 @@ _MOJIBAKE: list[tuple[str, str]] = [
     ("\u00c3\u00a0", "\u00e0"),  # Ã  → à
     ("\u00e2\u20ac", '"'),  # bare â€ prefix catch-all — must stay last
 ]
+
+
+def contains_scaffold(text: str) -> bool:
+    """True if the text carries Hermes steering scaffolding (interruption
+    markers) rather than real assistant prose."""
+    low = text.lower()
+    return any(marker in low for marker in _SCAFFOLD_MARKERS)
 
 
 def clean_voice_text(text: str) -> str:
@@ -121,10 +140,28 @@ def clean_voice_text(text: str) -> str:
     for bad, good in _MOJIBAKE:
         s = s.replace(bad, good)
 
-    # 1b. Em/en dashes: Fish S2.1 Pro reads them with NO pause (they behave
+    # 1a. Em/en dashes: Fish S2.1 Pro reads them with NO pause (they behave
     # like plain spaces). Convert to a comma so TTS gets a natural breath.
     # Absorb surrounding whitespace so "you — what" becomes "you, what".
     s = re.sub(r"\s*[\u2014\u2013]\s*", ", ", s)
+
+    # 1b. Fish Audio bracket prosody cues ([warm], [soft], [with quiet
+    # enthusiasm]) — the LLM is prompted to emit them for delivery variety
+    # and Fish S2.1-pro renders them as vocal style. They must NEVER reach
+    # the transcript/subtitles. Case-insensitive, letters/spaces/hyphens so
+    # numeric citations [1] survive. Mirror of client BRACKET_CUE_RE.
+    s = re.sub(r"\[[A-Za-z][A-Za-z -]{1,40}\]", "", s)
+
+    # 1c. Hermes steering scaffolding (interruption markers) — drop entire
+    # chunks that are scaffolding, and strip inline markers otherwise.
+    s = re.sub(
+        r"\[?\b(?:This response was interrupted by a user correction\.?"
+        r"|Visible response before the interruption:?"
+        r"|Context from the interrupted assistant response)\]?",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
 
     # 2. Code fences → spoken placeholder; inline code keeps its text.
     s = _CODE_FENCE_RE.sub(" [potongan kode] ", s)
@@ -613,6 +650,13 @@ class HermesLLMStream(LLMStream):
                                     )
                                 await send_text(cleaned)
                                 pending_text = True
+                            elif contains_scaffold(sentence):
+                                # Hermes steering scaffolding (interruption
+                                # markers) leaked into the reply stream after
+                                # a redirected turn — never speak/transcribe it.
+                                logger.info(
+                                    "Dropped Hermes steering scaffold from reply stream"
+                                )
                 elif event_type == "thinking.delta":
                     seen_turn_signal = True
                     # Thinking produces NO audio for the user — keep the

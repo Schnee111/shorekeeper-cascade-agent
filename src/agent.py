@@ -150,9 +150,13 @@ async def my_agent(ctx: JobContext):
         # VAD: silero min_silence_duration — how long a silence must be before
         # the VAD declares "speech ended" and hands the decision to the turn
         # detector. 0.25s (default) treats a quick breath as end-of-speech.
-        # With real semantic gating below, a slightly-early trigger only means
-        # the detector evaluates sooner — it can hold the turn if unsure.
-        vad=inference.VAD(model="silero", min_silence_duration=0.5),
+        # 2026-08-14 v2: raised 0.5 → 0.7 after observing real sessions:
+        # Schnee's clause pauses (thinking mid-request) run 0.5-0.7s, and
+        # 0.5 fired END_OF_SPEECH inside them → premature turn commits
+        # ("Tes." committed, then "...Live TTS-nya doang tapi" redirected in
+        # 3s later). 0.7 keeps true turn-ends snappy while tolerating thought
+        # pauses. Must stay ≥ 0.25s (SDK floor for the turn detector).
+        vad=inference.VAD(model="silero", min_silence_duration=0.7),
         turn_handling=TurnHandlingOptions(
             # Turn detection — the piece that decides "is the user done?".
             #
@@ -174,13 +178,17 @@ async def my_agent(ctx: JobContext):
             # Thresholds: NO override — use LiveKit's per-language calibrated
             # defaults instead of our stale hand-tuned 0.65.
             turn_detection=inference.TurnDetector(version="v1"),
-            # Grace period after end-of-turn detection. With semantic gating
-            # actually working, confident end-of-turn commits after min_delay
-            # (snappy), while mid-sentence pauses are held up to max_delay.
-            # min_delay also covers Deepgram finals that land slightly after
-            # end-of-speech. preemptive_generation (below) starts the LLM
-            # during the wait, so perceived latency stays low.
-            endpointing={"min_delay": 0.6, "max_delay": 2.0},
+            # Grace period after end-of-turn detection. Confident end-of-turn
+            # commits after min_delay (snappy); mid-sentence pauses the
+            # detector judges unlikely-to-be-done hold up to max_delay.
+            # min_delay is ALSO the continuation grace window: if the user
+            # resumes speaking within it, the pending commit is cancelled.
+            # 2026-08-14 v2: min_delay 0.6 → 0.8, max_delay 2.0 → 3.0 —
+            # measured sessions showed clause-pause continuations landing
+            # 0.6-1.0s after a confident "done" prediction; the extra 0.2s
+            # cancels those commits. Latency cost is masked by
+            # preemptive_generation starting the LLM during the wait.
+            endpointing={"min_delay": 0.8, "max_delay": 3.0},
             # Adaptive interruptions use the turn detector to tell a real interruption from a
             # backchannel like "mhm" or "right", so the agent keeps talking through the latter.
             interruption={"mode": "adaptive"},

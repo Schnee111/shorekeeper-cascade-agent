@@ -1,6 +1,6 @@
 # JARVIS Voice — Architecture & Status
 
-_Last updated: 2026-08-14 (session wrap-up)_
+_Last updated: 2026-08-14 05:45 WIB (turn-detection tuning v2)_
 
 ## Stack
 
@@ -13,7 +13,7 @@ LiveKit Cloud SFU                    token_server.py (:8082, systemd)
   ▼
 jarvis-agent (systemd, this repo)
   ├─ Deepgram nova-3 (STT, language=id)
-  ├─ Silero VAD (min_silence_duration=0.5)
+  ├─ Silero VAD (min_silence_duration=0.7)
   ├─ LiveKit Turn Detector v1 (CLOUD) ← endpointing, see below
   ├─ hermes_llm.py bridge → Hermes gateway WS :9119
   │     └─ hermes-voice-gateway.service (user systemd, NOFILE=65536)
@@ -35,9 +35,9 @@ After editing `src/*.py`: `sudo systemctl restart jarvis-agent`.
 
 Current values in `src/agent.py`:
 
-- `vad=inference.VAD(model="silero", min_silence_duration=0.5)`
+- `vad=inference.VAD(model="silero", min_silence_duration=0.7)`
 - `turn_detection=inference.TurnDetector(version="v1")` — **cloud, no threshold override**
-- `endpointing={"min_delay": 0.6, "max_delay": 2.0}`
+- `endpointing={"min_delay": 0.8, "max_delay": 3.0}`
 - `preemptive_generation={"enabled": True}` — LLM starts during the grace wait
 - `interruption={"mode": "adaptive"}`
 
@@ -64,7 +64,13 @@ per-language calibrated defaults (mini: id=0.345, en=0.36).
 1. Defaults → breath (250ms silence) split utterances.
 2. VAD 0.6s + threshold 0.65 + min/max 1.0/3.0 → fewer cutoffs but slow, and
    timeouts still caused false commits (v1-mini cold start).
-3. **Now:** cloud v1 + calibrated thresholds + min/max 0.6/2.0 + VAD 0.5.
+3. Cloud v1 + calibrated thresholds + min/max 0.6/2.0 + VAD 0.5 → redirect
+   mechanism proved sound, but clause pauses (0.5-0.7s) still committed early
+   ("Tes." committed, continuation redirected in 3s later).
+4. **Now (v2):** VAD 0.7 + min/max 0.8/3.0 + server+client scaffold filter.
+   Scaffold filter: Hermes steering machinery ("[This response was interrupted
+   by a user correction.]") leaked into the chat after redirected turns —
+   stripped in `hermes_llm.clean_voice_text` AND `voice-text.ts`.
 
 ## LiveKit Cloud inference quotas (self-hosted agents)
 
