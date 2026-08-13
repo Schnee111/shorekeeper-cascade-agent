@@ -33,18 +33,27 @@ VOICE_INSTRUCTIONS = """\
 - If asked for code or technical details: explain briefly in words; never output code or syntax."""
 
 # ---------------------------------------------------------------------------
-# Lapis 3 — Anti-silence filler engine (RE-ENABLED 2026-08-13, v2).
+# Lapis 3 — Anti-silence filler engine (RE-ENABLED 2026-08-13, v3).
 # Tool calls are silent: Hermes emits NO text deltas while a tool runs, so
-# the user hears nothing for 10-30s. The pipeline starts TTS synthesis on
-# the FIRST stream chunk (agent_activity._produce_segments), so an ack
-# emitted at tool start is spoken while the tool is still executing — the
-# voice overlaps the wait instead of prepending to it.
-# Triggers: tool.generating → immediate ack; pure silence > deadline →
-# timer fillers. Randomized, English, with Fish delivery cues.
+# the user hears nothing. The pipeline starts TTS synthesis on the FIRST
+# stream chunk (agent_activity._produce_segments), so an ack emitted at
+# tool start is spoken while the tool is still executing — the voice
+# overlaps the wait instead of prepending to it.
+#
+# v3 lesson (measured in logs): Hermes runs TOOL CHAINS (search → extract
+# → search) after one opening sentence — up to 13s of dead air between
+# tools. The ack is therefore keyed on silence-since-last-spoken, not a
+# once-per-turn flag, so every tool in a chain gets coverage:
+#   tool.generating + >1.5s silent → progress ack (per tool, throttled)
+#   pure silence > deadline        → timer fillers (max 2)
+#   tool.complete + no answer yet  → post-tool safety-net timer
 # ---------------------------------------------------------------------------
 FIRST_FILLER_DELAY = 3.0  # pure silence (no tool, no text) before filler 1
-SECOND_FILLER_DELAY = 8.0  # still silent after filler 1 / tool ack
-MAX_FILLERS = 2
+SECOND_FILLER_DELAY = 8.0  # stall detection while tool events keep flowing
+POST_TOOL_FILLER_DELAY = 4.0  # post-tool LLM latency measured 2-4s
+TOOL_ACK_MIN_SILENCE = 3.0  # don't stack acks in fast tool chains
+MAX_FILLERS = 2  # cap for TIMER fillers only; tool acks are event-bounded
+MAX_TOOL_ACKS = 2  # opening ack + one mid-chain progress ack is enough
 FILLER_FIRST = [
     "[calm] One second, let me think.",
     "[soft] Hmm, give me a moment.",
@@ -54,6 +63,11 @@ FILLER_TOOL = [
     "[warm] Let me check on that real quick.",
     "[calm] Give me a second, I'm looking into it.",
     "[soft] One moment, let me pull that up.",
+]
+FILLER_TOOL_PROGRESS = [
+    "[calm] Still checking, one moment.",
+    "[soft] Still looking into it.",
+    "[warm] Hang on, gathering the details.",
 ]
 FILLER_SECOND = [
     "[calm] Still working on it, hang tight.",
@@ -400,6 +414,9 @@ class HermesLLMStream(LLMStream):
         reader = asyncio.create_task(_ws_reader(hermes._ws, queue))
 
         async def send_text(text: str) -> None:
+            nonlocal spoken_any, t_last_spoken
+            spoken_any = True
+            t_last_spoken = loop.time()
             # Always terminate chunks on whitespace: the voice pipeline
             # concatenates deltas, so "satu." + "Dua" would become "satu.Dua"
             # — Fish TTS spells the glued token letter-by-letter and the
@@ -414,13 +431,15 @@ class HermesLLMStream(LLMStream):
         got_ack = False
         turn_over = False
         sentence_buffer = ""
-        fillers_sent = 0
+        timer_fillers_sent = 0
+        tool_acks_sent = 0
+        spoken_any = False
+        t_last_spoken = loop.time()
         t_first_delta: float | None = None
         t_first_sentence: float | None = None
-        # Lapis 3 v2 (RE-ENABLED): arm the silence timer at submit. Tool
-        # execution and long reasoning emit ZERO text deltas; the pipeline
-        # starts TTS on the first chunk, so a filler emitted here overlaps
-        # the wait instead of prepending to it (v1's analysis was wrong).
+        # Lapis 3 v3: arm the silence timer at submit. Tool execution and
+        # long reasoning emit ZERO text deltas; the pipeline starts TTS on
+        # the first chunk, so a filler emitted here overlaps the wait.
         filler_deadline: float | None = loop.time() + FIRST_FILLER_DELAY
 
         try:
@@ -431,19 +450,23 @@ class HermesLLMStream(LLMStream):
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    # Silence exceeded deadline → emit next filler.
-                    if fillers_sent == 0:
-                        logger.info("Filler 1 after %.1fs silence", FIRST_FILLER_DELAY)
-                        await send_text(random.choice(FILLER_FIRST))
-                        fillers_sent = 1
-                        filler_deadline = loop.time() + SECOND_FILLER_DELAY
-                    elif fillers_sent < MAX_FILLERS:
+                    # Silence exceeded deadline → emit next timer filler.
+                    # If the user already heard an ack, skip the "let me
+                    # think" pool and go straight to progress phrasing.
+                    if timer_fillers_sent < MAX_FILLERS:
+                        pool = FILLER_FIRST if not spoken_any else FILLER_SECOND
                         logger.info(
-                            "Filler 2 after %.1fs more silence", SECOND_FILLER_DELAY
+                            "Filler %d after silence (pool=%s)",
+                            timer_fillers_sent + 1,
+                            "first" if not spoken_any else "second",
                         )
-                        await send_text(random.choice(FILLER_SECOND))
-                        fillers_sent += 1
-                        filler_deadline = None
+                        await send_text(random.choice(pool))
+                        timer_fillers_sent += 1
+                        filler_deadline = (
+                            loop.time() + SECOND_FILLER_DELAY
+                            if timer_fillers_sent < MAX_FILLERS
+                            else None
+                        )
                     else:
                         filler_deadline = None
                     continue
@@ -510,19 +533,38 @@ class HermesLLMStream(LLMStream):
                     logger.info("Hermes tool started: %s", tool_name)
                     # Speak immediately: the ack is synthesized while the
                     # tool is still executing, so the voice OVERLAPS the
-                    # wait. Fire ONLY if nothing was spoken yet this turn
-                    # (no real text — those cancel the timer — and no
-                    # timer filler, else the user hears two back-to-back
-                    # acknowledgments).
-                    if filler_deadline is not None and fillers_sent == 0:
-                        logger.info("Tool ack before: %s", tool_name)
-                        await send_text(random.choice(FILLER_TOOL))
-                        fillers_sent += 1
+                    # wait. Silence-keyed (not once-per-turn) so every leg
+                    # of a tool CHAIN gets coverage — the opening sentence
+                    # and the first tool often arrive in the same chunk, so
+                    # gating on "no text yet" would miss the chain. The
+                    # throttle (TOOL_ACK_MIN_SILENCE) prevents stacking in
+                    # fast chains; the cap keeps chatter bounded.
+                    silence = loop.time() - t_last_spoken
+                    if (
+                        tool_acks_sent < MAX_TOOL_ACKS
+                        and silence >= TOOL_ACK_MIN_SILENCE
+                    ):
+                        pool = (
+                            FILLER_TOOL if tool_acks_sent == 0 else FILLER_TOOL_PROGRESS
+                        )
+                        logger.info(
+                            "Tool ack %d before: %s (silent %.1fs)",
+                            tool_acks_sent + 1,
+                            tool_name,
+                            silence,
+                        )
+                        await send_text(random.choice(pool))
+                        tool_acks_sent += 1
+                    # Stall guard: if nothing arrives for a long while even
+                    # with tool events flowing, the timer still speaks up.
+                    if filler_deadline is None:
                         filler_deadline = loop.time() + SECOND_FILLER_DELAY
                 elif event_type == "tool.complete":
                     logger.info("Hermes tool complete")
-                    if filler_deadline is not None and fillers_sent < MAX_FILLERS:
-                        filler_deadline = loop.time() + SECOND_FILLER_DELAY
+                    # Post-tool safety net: the second LLM pass (composing
+                    # the answer) takes 2-4s measured; if nothing streams
+                    # within POST_TOOL_FILLER_DELAY, a filler covers it.
+                    filler_deadline = loop.time() + POST_TOOL_FILLER_DELAY
                 elif event_type in (
                     "message.complete",
                     "turn.complete",
