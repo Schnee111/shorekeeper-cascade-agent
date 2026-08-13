@@ -9,11 +9,13 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 
 import websockets
 from dotenv import load_dotenv
 
-load_dotenv(".env.local")
+# Resolve .env.local from the repo root (script lives in tools/).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env.local")
 
 URL = "ws://127.0.0.1:9119/api/ws?token=" + os.environ.get("HERMES_WS_TOKEN", "")
 
