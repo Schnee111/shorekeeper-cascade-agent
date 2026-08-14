@@ -53,24 +53,178 @@ VOICE_INSTRUCTIONS = """\
 - If asked for code or technical details: explain briefly in words; never output long unformatted code blocks."""
 
 # ---------------------------------------------------------------------------
-# Lapis 3 — Silence handling (v5: voice fillers REMOVED).
+# Lapis 3 — Smart Filler Engine (v6).
 #
-# v4's dwell engine measured silence from TEXT-EMIT time, not from actual
-# audio playout, so back-to-back segments still stacked audibly. Instead of
-# patching playout tracking, the decision (user, 2026-08-14): no voice
-# fillers at all. The UI now shows PERMANENT per-tool progress rows
-# (Gemini/Claude style) — they replace the filler's purpose of signaling
-# "still working". Voice pattern per turn is exactly two moments:
-#   1. the opening sentence ("let me check…"), flushed right before the
-#      first tool runs
-#   2. the final result
-# Two spoken moments, zero chatter.
+# v5 removed all voice fillers. v6 adds them back, but intelligently:
+# - Fast tools (< 0.8s) → NO filler at all, straight to final answer
+# - Slow tools (> 0.8s) → ONE opening filler via session.say(), not LLM text
+# - Multi-tool sequences → filler only on the FIRST slow tool; subsequent
+#   tools get a dwell filler ("Still looking...") only if the total silence
+#   exceeds 4s since the last spoken text
+#
+# Key insight from LiveKit docs: use session.say() for fillers, NOT
+# LLM-generated text. LLM emits the opening sentence and the tool call in
+# the same burst, so the TTS never gets a head start. session.say()
+# bypasses the LLM entirely and speaks immediately.
+#
+# The filler is injected from the bridge side (hermes_llm) because that's
+# where we see the tool.generating / tool.complete events. We don't have
+# direct access to session.say() from here, so we emit the filler as a
+# normal ChatChunk + FlushSentinel — the SDK routes it to TTS immediately.
 # ---------------------------------------------------------------------------
+
+# Filler pools — rotated randomly so repeated calls don't sound canned.
+# Opening fillers: spoken when a slow tool starts (> 0.8s).
+# Written to sound natural and conversational, not robotic.
+_OPENING_FILLERS = [
+    "[soft] Let me check that for you.",
+    "[warm] Give me just a moment.",
+    "[gentle] One second, looking into it.",
+    "[soft] Let me take a quick look.",
+    "[warm] Checking on that now.",
+    "[gentle] Just a moment, please.",
+]
+
+# Dwell fillers: spoken when total silence exceeds 4s during multi-tool.
+# These acknowledge the wait without repeating the opening filler.
+_DWELL_FILLERS = [
+    "[soft] Hmm, still looking...",
+    "[warm] Almost there...",
+    "[gentle] Just a bit longer...",
+    "[soft] One more moment...",
+    "[warm] Still working on it...",
+]
+
+# Timing thresholds
+_TOOL_FAST_THRESHOLD = 0.3  # seconds — tools faster than this get NO filler
+_DWELL_THRESHOLD = 4.0  # seconds of silence before dwell filler kicks in
+
+
+class _FillerEngine:
+    """Manages filler injection for one turn.
+
+    Tracks tool timing and decides when to inject opening/dwell fillers.
+    All state is per-turn; a new engine is created for each _run_turn call.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+        self._t_turn_start = loop.time()
+        self._t_last_spoken: float | None = None  # last time ANY text was sent to TTS
+        self._t_first_tool_start: float | None = None
+        self._opening_filler_sent = False
+        self._dwell_filler_sent = False
+        self._filler_task: asyncio.Task | None = None
+        self._tool_count = 0
+        self._last_tool_name = ""
+        self._tool_active = False  # True between tool.generating and tool.complete
+
+    def record_spoken(self) -> None:
+        """Call whenever any text is sent to TTS (user-facing or filler)."""
+        self._t_last_spoken = self._loop.time()
+
+    @property
+    def tool_count(self) -> int:
+        """Number of tools started this turn."""
+        return self._tool_count
+
+    @property
+    def tool_active(self) -> bool:
+        """True while a tool is actively running."""
+        return self._tool_active
+
+    @property
+    def opening_filler_sent(self) -> bool:
+        """True if the opening filler has been sent."""
+        return self._opening_filler_sent
+
+    def reset_dwell(self) -> None:
+        """Reset dwell filler state so it can fire again for the next tool."""
+        self._dwell_filler_sent = False
+
+    def record_tool_start(self, tool_name: str) -> bool:
+        """Record a tool starting. Returns True if this is the first tool."""
+        self._tool_count += 1
+        self._last_tool_name = tool_name
+        self._tool_active = True
+        if self._t_first_tool_start is None:
+            self._t_first_tool_start = self._loop.time()
+            return True
+        return False
+
+    def record_tool_end(self) -> None:
+        """Record a tool completing."""
+        self._tool_active = False
+
+    def cancel_pending(self) -> None:
+        """Cancel any pending filler task."""
+        if self._filler_task is not None and not self._filler_task.done():
+            self._filler_task.cancel()
+            self._filler_task = None
+
+    async def schedule_opening(self, send_filler) -> None:
+        """Schedule an opening filler if the tool is slow enough.
+
+        send_filler is an async callable that takes a filler string and
+        sends it to TTS. This method waits _TOOL_FAST_THRESHOLD seconds;
+        if the tool hasn't completed by then, it fires the filler.
+        """
+        self.cancel_pending()
+
+        async def _fire() -> None:
+            await asyncio.sleep(_TOOL_FAST_THRESHOLD)
+            if not self._opening_filler_sent:
+                filler = _OPENING_FILLERS[
+                    hash(str(self._t_turn_start)) % len(_OPENING_FILLERS)
+                ]
+                logger.info(
+                    "Filler engine: opening filler after %.1fs", _TOOL_FAST_THRESHOLD
+                )
+                await send_filler(filler)
+                self._opening_filler_sent = True
+                self.record_spoken()
+
+        self._filler_task = asyncio.create_task(_fire())
+
+    async def schedule_dwell(self, send_filler) -> None:
+        """Schedule a dwell filler for extended silence during multi-tool.
+
+        Only fires if: opening filler was already sent, AND no text has been
+        spoken for _DWELL_THRESHOLD seconds, AND the turn is still ongoing.
+        """
+        if self._dwell_filler_sent or not self._opening_filler_sent:
+            return
+
+        self.cancel_pending()
+
+        async def _fire() -> None:
+            await asyncio.sleep(_DWELL_THRESHOLD)
+            # Check if we've been silent the whole time
+            if (
+                self._t_last_spoken is not None
+                and self._loop.time() - self._t_last_spoken >= _DWELL_THRESHOLD - 0.5
+            ):
+                filler = _DWELL_FILLERS[
+                    hash(str(self._t_turn_start) + "dwell") % len(_DWELL_FILLERS)
+                ]
+                logger.info(
+                    "Filler engine: dwell filler after %.1fs silence", _DWELL_THRESHOLD
+                )
+                await send_filler(filler)
+                self._dwell_filler_sent = True
+                self.record_spoken()
+
+        self._filler_task = asyncio.create_task(_fire())
+
 
 # ---------------------------------------------------------------------------
 # Lapis 2 — Sentence & Clause splitter + cleaner (TTS safety net).
 # ---------------------------------------------------------------------------
-_BOUNDARY_CHARS = ".!?,;\n"
+# Boundary chars for sentence splitting: only `.`, `!`, `?`, newline.
+# Commas and semicolons are NOT boundaries — they are mid-sentence pauses.
+# Splitting on commas creates paragraph-like breaks in the client UI and
+# unnatural TTS prosody. The TTS tokenizer handles comma pauses internally.
+_BOUNDARY_CHARS = ".!?\n"
 _MIN_SENTENCE_LEN = 6  # Reduced 12 -> 6 so first short clause ("Tentu,", "Baik,") streams instantly to TTS
 _MAX_PENDING_LEN = 250  # Lowered from 400 to force-cut long clauses sooner
 
@@ -231,9 +385,20 @@ def _split_sentence(buffer: str) -> tuple[str | None, str]:
     available yet. Boundaries: `.`, `!`, `?`, newline. A minimum-length guard
     avoids cutting abbreviations/decimals mid-token; a max-pending cap
     force-cuts at the last space so TTS latency stays bounded.
+
+    Decimal-aware: a `.` preceded AND followed by a digit is NOT a boundary
+    (e.g. "3.7", "1.0", "0.54"). This prevents splitting version numbers,
+    measurements, and decimal figures mid-token.
     """
     for i, ch in enumerate(buffer):
         if ch in _BOUNDARY_CHARS and (ch == "\n" or i + 1 >= _MIN_SENTENCE_LEN):
+            # Decimal guard: don't split on a period that's part of a number.
+            # Check the character before and after the period.
+            if ch == ".":
+                prev_char = buffer[i - 1] if i > 0 else ""
+                next_char = buffer[i + 1] if i + 1 < len(buffer) else ""
+                if prev_char.isdigit() and next_char.isdigit():
+                    continue  # This is a decimal point, not a sentence boundary
             return buffer[: i + 1], buffer[i + 1 :]
     if len(buffer) > _MAX_PENDING_LEN:
         cut = buffer.rfind(" ")
@@ -528,10 +693,15 @@ class HermesLLMStream(LLMStream):
         queue: asyncio.Queue = asyncio.Queue()
         reader = asyncio.create_task(_ws_reader(hermes._ws, queue))
 
+        # Smart Filler Engine v6 — manages opening/dwell fillers per turn.
+        # Defined before send_text/send_filler so closures can reference it.
+        filler = _FillerEngine(loop)
+
         async def send_text(text: str, *, flush_after: bool = False) -> None:
             nonlocal spoken_any, t_last_spoken, pending_text
             spoken_any = True
             t_last_spoken = loop.time()
+            filler.record_spoken()
             # Always terminate chunks on whitespace: the voice pipeline
             # concatenates deltas, so "satu." + "Dua" would become "satu.Dua"
             # — Fish TTS spells the glued token letter-by-letter and the
@@ -542,6 +712,7 @@ class HermesLLMStream(LLMStream):
                     delta=ChoiceDelta(role="assistant", content=text + " "),
                 )
             )
+            logger.info("TTS chunk: %.80s", text)
             if flush_after:
                 await flush_segment()
 
@@ -567,6 +738,30 @@ class HermesLLMStream(LLMStream):
         t_last_spoken = loop.time()
         t_first_delta: float | None = None
         t_first_sentence: float | None = None
+
+        async def send_filler(text: str) -> None:
+            """Send a filler line to TTS immediately, bypassing the LLM.
+
+            The filler is sent as a normal ChatChunk + FlushSentinel, so
+            the SDK routes it straight to TTS synthesis without waiting
+            for the LLM stream to finish. This is the LiveKit-recommended
+            pattern for masking dead air during tool execution.
+            """
+            nonlocal spoken_any, t_last_spoken, pending_text
+            spoken_any = True
+            t_last_spoken = loop.time()
+            filler.record_spoken()
+            # Cancel any pending filler task — we just spoke, so no need
+            # for a scheduled filler to fire.
+            filler.cancel_pending()
+            await self._event_ch.send(
+                ChatChunk(
+                    id="hermes",
+                    delta=ChoiceDelta(role="assistant", content=text + " "),
+                )
+            )
+            await self._event_ch.send(_VoiceFlush())
+            pending_text = False
 
         try:
             # Phase 1 — wait for the submit ack and DROP every event that
@@ -686,6 +881,20 @@ class HermesLLMStream(LLMStream):
                                     "Dropped Hermes steering scaffold from reply stream"
                                 )
                                 continue
+                            # Approach D (Hybrid): Send first sentence
+                            # IMMEDIATELY — it doubles as the opening filler.
+                            # The filler engine will cancel its own opening
+                            # filler if LLM already emitted text (see
+                            # tool.generating handler). This gives the fastest
+                            # possible response with zero added latency.
+                            #
+                            # CRITICAL: flush_after=True ONLY for the first
+                            # sentence — it forces the TTS to render the
+                            # opening as its own segment, preventing it from
+                            # being glued onto the final answer. Subsequent
+                            # sentences flow WITHOUT flush so the TTS sentence
+                            # tokenizer batches them naturally (no paragraph-
+                            # like gaps in the client UI).
                             if t_first_sentence is None:
                                 t_first_sentence = loop.time()
                                 logger.info(
@@ -693,7 +902,9 @@ class HermesLLMStream(LLMStream):
                                     t_first_sentence - t_submit,
                                     t_first_delta - t_submit if t_first_delta else 0,
                                 )
-                            await send_text(sentence)
+                                await send_text(sentence, flush_after=True)
+                            else:
+                                await send_text(sentence)
                             pending_text = True
                 elif event_type == "thinking.delta":
                     seen_turn_signal = True
@@ -708,22 +919,74 @@ class HermesLLMStream(LLMStream):
                         "Hermes tool started: %s (args=%s)", tool_name, tool_args
                     )
 
-                    # Force flush any pending text (or sentence buffer) so TTS plays IMMEDIATELY before tool runs.
-                    if sentence_buffer:
-                        sentence = sentence_buffer
-                        sentence_buffer = ""
-                        await send_text(sentence)
-                        pending_text = True
-                    if pending_text:
-                        logger.info("Flushing pending text before tool: %s", tool_name)
-                        await flush_segment()
+                    # Smart Filler Engine: decide whether to speak a filler.
+                    # - If LLM already emitted first sentence (t_first_sentence
+                    #   is not None), that sentence doubles as the opening
+                    #   filler — cancel the engine's own opening filler to
+                    #   prevent double-speak.
+                    # - If no LLM text yet, schedule opening filler with 0.3s
+                    #   gate (fast tools skip it entirely).
+                    # - Multi-tool: subsequent tools schedule a dwell filler
+                    #   after 4s of silence, but only if an opening filler
+                    #   was already sent.
+                    is_first_tool = filler.record_tool_start(tool_name)
+                    # Reset dwell state so the next slow tool can trigger
+                    # another dwell filler ("Still looking...") even after
+                    # a previous one already fired.
+                    filler.reset_dwell()
 
-                    # Publish tool activity AFTER text is flushed so TTS stream is opened FIRST
+                    # Discard any pending LLM text for fast tools — it would
+                    # arrive as a late filler AFTER the tool already finished,
+                    # which sounds unnatural. The LLM's opening sentence is
+                    # only useful for slow tools; for fast ones it's noise.
+                    if sentence_buffer:
+                        logger.info(
+                            "Discarding pending text for fast tool: %s", tool_name
+                        )
+                        sentence_buffer = ""
+                    pending_text = False
+
+                    if is_first_tool:
+                        # First tool: only schedule opening filler if LLM
+                        # hasn't already emitted its own opening sentence.
+                        # If t_first_sentence is set, the LLM's text already
+                        # serves as the filler — engine's would be a duplicate.
+                        if t_first_sentence is None:
+                            await filler.schedule_opening(send_filler)
+                        else:
+                            logger.info(
+                                "LLM already emitted opening sentence, "
+                                "skipping engine filler for tool: %s",
+                                tool_name,
+                            )
+                    else:
+                        # Subsequent tools: schedule dwell filler for extended
+                        # silence. Only fires if opening filler was already sent
+                        # and no text has been spoken for 4+ seconds.
+                        await filler.schedule_dwell(send_filler)
+
+                    # Publish tool activity to UI (chip indicator)
                     hermes.publish_tool_activity("start", tool_name, tool_args)
                 elif event_type == "tool.complete":
                     if not seen_turn_signal:
                         continue  # stale tail of the barged-in turn
                     logger.info("Hermes tool complete")
+                    # Tool finished — cancel any pending filler that hasn't
+                    # fired yet. If the filler already fired (tool was slow),
+                    # cancel_pending() is a no-op.
+                    filler.cancel_pending()
+                    filler.record_tool_end()
+                    # Flush any LLM text that was buffered while the tool was
+                    # running. This is the actual answer content that the LLM
+                    # produced before or during the tool call.
+                    if sentence_buffer.strip():
+                        logger.info(
+                            "Flushing buffered text after tool: %.60s…",
+                            sentence_buffer[:60],
+                        )
+                        await send_text(sentence_buffer)
+                        sentence_buffer = ""
+                        pending_text = True
                     hermes.publish_tool_activity("complete", "?")
                 elif event_type in (
                     "message.complete",
@@ -744,6 +1007,17 @@ class HermesLLMStream(LLMStream):
                         got_ack,
                         loop.time() - t_submit,
                     )
+                    # Flush any buffered first sentence for no-tool turns.
+                    # If a tool was active, this was already flushed on
+                    # tool.complete. This is the safety net for turns that
+                    # never triggered a tool.
+                    if sentence_buffer.strip():
+                        logger.info(
+                            "Flushing buffered text at turn end: %.60s…",
+                            sentence_buffer[:60],
+                        )
+                        await send_text(sentence_buffer)
+                        sentence_buffer = ""
                     turn_over = True
                 elif event_type == "error":
                     # An error event IS a turn signal: the gateway emits
@@ -764,6 +1038,7 @@ class HermesLLMStream(LLMStream):
                     turn_over = True
         finally:
             reader.cancel()
+            filler.cancel_pending()
 
         # Flush any trailing partial sentence.
         if sentence_buffer.strip():
