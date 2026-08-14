@@ -202,7 +202,14 @@ async def my_agent(ctx: JobContext):
     # Warm-up: proactively establish WS connection and create Hermes session
     # in background during room startup so turn #1 has 0ms connection latency.
     warmup_task = asyncio.create_task(hermes._ensure_session())
-    ctx.add_shutdown_callback(lambda: warmup_task.cancel())
+
+    async def _on_shutdown() -> None:
+        warmup_task.cancel()
+        # Ensure process tree cleanup after graceful shutdown
+        loop = asyncio.get_running_loop()
+        loop.call_later(1.0, _kill_own_tree)
+
+    ctx.add_shutdown_callback(_on_shutdown)
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
