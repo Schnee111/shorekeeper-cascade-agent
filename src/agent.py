@@ -8,6 +8,7 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    InterruptionOptions,
     JobContext,
     TurnHandlingOptions,
     cli,
@@ -124,16 +125,20 @@ async def my_agent(ctx: JobContext):
     # picks ?voice=<key>, the token server embeds the Fish Audio voice ID,
     # and it lands on the participant object once they join.
     voice_id = FALLBACK_VOICE
+    model_override = None
     participant = None
     try:
         participant = await asyncio.wait_for(
             ctx.wait_for_participant(identity="schnee"), timeout=30.0
         )
-        voice_id = (participant.attributes or {}).get("voice") or FALLBACK_VOICE
+        attributes = participant.attributes or {}
+        voice_id = attributes.get("voice") or FALLBACK_VOICE
+        model_override = attributes.get("model")
         logger.info(
-            "Participant joined: %s — voice attribute: %s",
+            "Participant joined: %s — voice attribute: %s, model attribute: %s",
             participant.identity,
             voice_id,
+            model_override,
         )
     except asyncio.TimeoutError:
         logger.warning("No participant joined within 30s — using fallback voice")
@@ -144,7 +149,7 @@ async def my_agent(ctx: JobContext):
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
         # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=deepgram.STT(model="nova-3", language="id"),
+        stt=deepgram.STT(model="nova-3", language="id", endpointing_ms=500),
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models at https://docs.livekit.io/agents/models/tts/
         tts=inference.TTS(model="fishaudio/s2.1-pro-free", voice=voice_id),
@@ -157,65 +162,21 @@ async def my_agent(ctx: JobContext):
         # ("Tes." committed, then "...Live TTS-nya doang tapi" redirected in
         # 3s later). 0.7 keeps true turn-ends snappy while tolerating thought
         # pauses. Must stay ≥ 0.25s (SDK floor for the turn detector).
-        vad=inference.VAD(model="silero", min_silence_duration=0.7),
+        vad=inference.VAD(model="silero", min_silence_duration=0.6),
         turn_handling=TurnHandlingOptions(
-            # Turn detection — the piece that decides "is the user done?".
-            #
-            # History of this setting (2026-08-14): we ran the SDK's default
-            # local `v1-mini` model on this 2-core VPS. Its first inference
-            # per session exceeded the hardcoded 1.0s prediction timeout →
-            # "eot prediction timed out, committing without a prediction" →
-            # turns committed on silence alone → false cutoffs ("cek
-            # statusnya di" / "…di folder project" split into two turns).
-            # Our unlikely_threshold=0.65 override was also calibrated for an
-            # older model version; the SDK now warns overrides are suboptimal.
-            #
-            # Fix: cloud `version="v1"` — the full LiveKit Turn Detector v1
-            # (eot-bench SOTA across 14 languages incl. Indonesian; listens
-            # to audio directly instead of reading transcripts). Auth reuses
-            # LIVEKIT_API_KEY/SECRET; every plan includes 7,500 free
-            # inference requests/month. local_fallback=True (default) keeps
-            # v1-mini as a degraded path if the gateway is unreachable.
-            # Thresholds: NO override — use LiveKit's per-language calibrated
-            # defaults instead of our stale hand-tuned 0.65.
             turn_detection=inference.TurnDetector(version="v1"),
-            # Grace period after end-of-turn detection.
-            #
-            # 2026-08-14 v3 — ROOT CAUSE of the persistent mid-utterance
-            # cutoffs found by reading audio_recognition.py: the commit grace
-            # is `min_delay - (now - last_speaking_time)`, i.e. min_delay
-            # measured FROM THE ACTUAL END OF SPEECH. But END_OF_SPEECH only
-            # fires after min_silence_duration (0.7s) and the cloud EOT
-            # prediction then takes ~0.3s to arrive. By that point
-            # 0.7 + 0.3 = 1.0s has ALREADY elapsed — so with min_delay 0.8
-            # the extra sleep went NEGATIVE and turns committed the instant
-            # the prediction landed, with effectively ZERO grace. Continuations
-            # arriving 1.0-1.5s after a clause pause could never cancel the
-            # commit. Observed: "cari modelnya yang top player" committed,
-            # then 3 more commits at 1.2-1.8s intervals for the same sentence.
-            #
-            # Fix: dynamic endpointing. min_delay is the FLOOR; the SDK learns
-            # the user's actual between-utterance pause distribution (EMA,
-            # alpha=0.7 adapts fast for a single consistent speaker) and raises
-            # the effective delay toward it, capped at max_delay. Learning
-            # happens exactly when a commit is cancelled by continuation —
-            # the failure mode teaches its own cure. Floor 1.2s guarantees
-            # ~0.2s of real grace even before learning kicks in (1.2 - 0.7
-            # VAD - 0.3 prediction). max_delay 3.5 holds uncertain pauses
-            # (prediction < unlikely_threshold) long enough for Schnee's
-            # thinking pauses, which run 1-2s, occasionally ~3s.
-            # preemptive_generation masks the added latency.
             endpointing={
                 "mode": "dynamic",
                 "min_delay": 1.2,
-                "max_delay": 3.5,
+                "max_delay": 4.0,
                 "alpha": 0.7,
             },
-            # Adaptive interruptions use the turn detector to tell a real interruption from a
-            # backchannel like "mhm" or "right", so the agent keeps talking through the latter.
-            interruption={"mode": "adaptive"},
-            # allow the LLM to generate a response while waiting for the end of turn
-            # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
+            interruption=InterruptionOptions(
+                enabled=True,
+                mode="vad",
+                min_duration=0.3,
+                resume_false_interruption=True,
+            ),
             preemptive_generation={"enabled": True},
         ),
         # Expressive mode injects the TTS provider's markup guide into the LLM prompt, so the model
@@ -231,7 +192,7 @@ async def my_agent(ctx: JobContext):
 
     # Shared Hermes bridge: created before the agent so the session can
     # bind the room after start() (tool-activity chip events → client).
-    hermes = HermesLLM()
+    hermes = HermesLLM(model_override=model_override)
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
@@ -283,7 +244,7 @@ async def my_agent(ctx: JobContext):
         try:
             greeting = random.choice(GREETINGS)
             logger.info("Sending greeting: %s", greeting)
-            await session.say(greeting)
+            await session.say(greeting, add_to_chat_ctx=False)
         except Exception:
             logger.exception("Greeting failed")
 
