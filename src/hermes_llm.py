@@ -106,7 +106,7 @@ _DWELL_FILLERS = [
 
 # Timing thresholds
 _TOOL_FAST_THRESHOLD = 0.3  # seconds — tools faster than this get NO filler
-_DWELL_THRESHOLD = 7.5  # seconds of silence before dwell filler kicks in
+_DWELL_THRESHOLD = 4.0  # seconds of silence before dwell filler kicks in
 
 
 class _FillerEngine:
