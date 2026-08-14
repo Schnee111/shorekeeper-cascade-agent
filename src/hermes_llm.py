@@ -44,8 +44,8 @@ class _VoiceFlush(FlushSentinel):
 VOICE_INSTRUCTIONS = """\
 [VOICE MODE] You are on an interactive realtime voice call with the user (Schnee).
 - Personality & Engagement: Be warm, proactive, and engaging. After answering or completing an action, proactively offer the next step, ask a helpful follow-up question, or suggest what to do next.
-- Keep replies conversational and spoken-friendly (2-3 concise sentences or a clean 3-4 bullet list).
-- Formatting: When listing items, use bullet points with '-' on new lines. Preserve natural paragraph breaks between ideas.
+- Keep replies concise, conversational, and spoken-friendly (2-3 short sentences or a tight 2-3 bullet list max). When listing items, format with clear markdown (e.g. bold the title like **Title**: description or **Title** on each bullet '- **Title**: details'). Always use '-' on new lines.
+- End every list response with a natural follow-up question on its own clean paragraph (e.g. "Would you like me to look into one of these?").
 - Write numbers, dates, and amounts as standard digits (e.g. 25, 2026, 1.500).
 - Delivery cues: start EVERY reply with a bracket cue describing how the first sentence should be delivered (e.g. [warm], [cheerful], [soft], [calm]). Cues are for TTS style and will be stripped automatically from the text display.
 - Language policy: ALWAYS reply in English. Switch to Indonesian ONLY when the user explicitly asks for Indonesian (e.g. "pakai bahasa Indonesia", "jawab dalam bahasa Indonesia", "ngomong bahasa Indonesia"). If the user switches back to Indonesian without such a request, keep replying in English.
@@ -349,7 +349,7 @@ def clean_voice_text(text: str) -> str:
     # 5. Line-level markdown: hr, headings, bullets, quotes, table pipes.
     s = _HR_RE.sub("", s)
     s = _HEADING_RE.sub("", s)
-    s = _BULLET_RE.sub("", s)
+    # Do NOT strip bullet markers from line start — let them flow so client renders real markdown lists!
     s = _QUOTE_RE.sub("", s)
     s = _TABLE_PIPE_RE.sub(" ", s)
 
@@ -415,6 +415,11 @@ def _split_sentence(buffer: str) -> tuple[str | None, str]:
                 next_char = buffer[i + 1] if i + 1 < len(buffer) else ""
                 if prev_char.isdigit() and next_char.isdigit():
                     continue  # This is a decimal point, not a sentence boundary
+                # File extension guard: don't split on file extensions like .py, .ts, .js, .json, .md
+                # e.g. "agent.py", "conversation.svelte.ts"
+                after = buffer[i + 1 : i + 10]
+                if re.match(r"^[a-zA-Z0-9_-]+\b", after) and not re.match(r"^\s", next_char):
+                    continue
             return buffer[: i + 1], buffer[i + 1 :]
     if len(buffer) > _MAX_PENDING_LEN:
         cut = buffer.rfind(" ")
@@ -986,38 +991,38 @@ class HermesLLMStream(LLMStream):
                         "Hermes tool started: %s (args=%s)", tool_name, tool_args
                     )
 
-                    # Smart Filler Engine: decide whether to speak a filler.
+                    # INSTANT PRE-TOOL FLUSH: If the LLM has emitted an opening sentence
+                    # (or partial sentence in buffer), flush it to TTS immediately before
+                    # the tool executes so speech starts with zero delay.
+                    if sentence_buffer.strip():
+                        sentence = sentence_buffer.strip()
+                        sentence_buffer = ""
+                        if t_first_sentence is None:
+                            t_first_sentence = loop.time()
+                            logger.info(
+                                "Flushing LLM opening sentence before tool: %.60s",
+                                sentence[:60],
+                            )
+                            await send_text(sentence, flush_after=True)
+                        else:
+                            await send_text(sentence)
+                        pending_text = True
+
+                    if pending_text:
+                        logger.info("Flushing pending text before tool: %s", tool_name)
+                        await flush_segment()
+
+                    # Smart Filler Engine: decide whether to speak a fallback filler.
                     # - If LLM already emitted first sentence (t_first_sentence
                     #   is not None), that sentence doubles as the opening
                     #   filler — cancel the engine's own opening filler to
                     #   prevent double-speak.
                     # - If no LLM text yet, schedule opening filler with 0.3s
                     #   gate (fast tools skip it entirely).
-                    # - Multi-tool: subsequent tools schedule a dwell filler
-                    #   after 4s of silence, but only if an opening filler
-                    #   was already sent.
                     is_first_tool = filler.record_tool_start(tool_name)
-                    # Reset dwell state so the next slow tool can trigger
-                    # another dwell filler ("Still looking...") even after
-                    # a previous one already fired.
                     filler.reset_dwell()
 
-                    # Discard any pending LLM text for fast tools — it would
-                    # arrive as a late filler AFTER the tool already finished,
-                    # which sounds unnatural. The LLM's opening sentence is
-                    # only useful for slow tools; for fast ones it's noise.
-                    if sentence_buffer:
-                        logger.info(
-                            "Discarding pending text for fast tool: %s", tool_name
-                        )
-                        sentence_buffer = ""
-                    pending_text = False
-
                     if is_first_tool:
-                        # First tool: only schedule opening filler if LLM
-                        # hasn't already emitted its own opening sentence.
-                        # If t_first_sentence is set, the LLM's text already
-                        # serves as the filler — engine's would be a duplicate.
                         if t_first_sentence is None:
                             await filler.schedule_opening(send_filler)
                         else:
@@ -1028,8 +1033,7 @@ class HermesLLMStream(LLMStream):
                             )
                     else:
                         # Subsequent tools: schedule dwell filler for extended
-                        # silence. Only fires if opening filler was already sent
-                        # and no text has been spoken for 4+ seconds.
+                        # silence during multi-tool.
                         await filler.schedule_dwell(send_filler)
 
                     # Publish tool activity to UI (chip indicator)
