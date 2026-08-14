@@ -675,16 +675,15 @@ class HermesLLMStream(LLMStream):
                             sentence, sentence_buffer = _split_sentence(sentence_buffer)
                             if sentence is None:
                                 break
-                            cleaned = clean_voice_text(sentence)
-                            if cleaned:
-                                if t_first_sentence is None:
-                                    t_first_sentence = loop.time()
-                                    logger.info(
-                                        "First sentence to TTS: %.2fs after submit",
-                                        t_first_sentence - t_submit,
-                                    )
-                                await send_text(cleaned)
-                                pending_text = True
+                            # Stream raw sentence chunk to client UI/transcript first
+                            await send_text(sentence)
+                            pending_text = True
+                            if t_first_sentence is None:
+                                t_first_sentence = loop.time()
+                                logger.info(
+                                    "First sentence to TTS: %.2fs after submit",
+                                    t_first_sentence - t_submit,
+                                )
                             elif contains_scaffold(sentence):
                                 # Hermes steering scaffolding (interruption
                                 # markers) leaked into the reply stream after
@@ -705,11 +704,10 @@ class HermesLLMStream(LLMStream):
                     
                     # Force flush any pending text (or sentence buffer) so TTS plays IMMEDIATELY before tool runs.
                     if sentence_buffer:
-                        cleaned = clean_voice_text(sentence_buffer)
+                        sentence = sentence_buffer
                         sentence_buffer = ""
-                        if cleaned:
-                            await send_text(cleaned)
-                            pending_text = True
+                        await send_text(sentence)
+                        pending_text = True
                     if pending_text:
                         logger.info("Flushing pending text before tool: %s", tool_name)
                         await flush_segment()
@@ -763,6 +761,4 @@ class HermesLLMStream(LLMStream):
 
         # Flush any trailing partial sentence.
         if sentence_buffer.strip():
-            cleaned = clean_voice_text(sentence_buffer)
-            if cleaned:
-                await send_text(cleaned)
+            await send_text(sentence_buffer)
