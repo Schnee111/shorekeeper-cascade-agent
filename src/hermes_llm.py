@@ -125,6 +125,7 @@ def contains_scaffold(text: str) -> bool:
     low = text.lower()
     return any(marker in low for marker in _SCAFFOLD_MARKERS)
 
+
 def clean_voice_text(text: str) -> str:
     """Strip markdown/emoji/URLs/control chars from one chunk of voice text.
 
@@ -675,22 +676,25 @@ class HermesLLMStream(LLMStream):
                             sentence, sentence_buffer = _split_sentence(sentence_buffer)
                             if sentence is None:
                                 break
-                            # Stream raw sentence chunk to client UI/transcript first
-                            await send_text(sentence)
-                            pending_text = True
-                            if t_first_sentence is None:
-                                t_first_sentence = loop.time()
-                                logger.info(
-                                    "First sentence to TTS: %.2fs after submit",
-                                    t_first_sentence - t_submit,
-                                )
-                            elif contains_scaffold(sentence):
-                                # Hermes steering scaffolding (interruption
-                                # markers) leaked into the reply stream after
-                                # a redirected turn — never speak/transcribe it.
+                            # Hermes steering scaffolding (interruption markers)
+                            # can leak into the reply stream after a redirected
+                            # turn — never speak/transcribe it. Check BEFORE
+                            # send_text: in HEAD the check ran after the text
+                            # had already been streamed to TTS (dead code).
+                            if contains_scaffold(sentence):
                                 logger.info(
                                     "Dropped Hermes steering scaffold from reply stream"
                                 )
+                                continue
+                            if t_first_sentence is None:
+                                t_first_sentence = loop.time()
+                                logger.info(
+                                    "First sentence to TTS: %.2fs after submit (TTFT delta: %.2fs)",
+                                    t_first_sentence - t_submit,
+                                    t_first_delta - t_submit if t_first_delta else 0,
+                                )
+                            await send_text(sentence)
+                            pending_text = True
                 elif event_type == "thinking.delta":
                     seen_turn_signal = True
                     # Thinking produces NO audio for the user — keep the
@@ -700,8 +704,10 @@ class HermesLLMStream(LLMStream):
                     seen_turn_signal = True
                     tool_name = payload.get("name", "?")
                     tool_args = payload.get("args", {})
-                    logger.info("Hermes tool started: %s (args=%s)", tool_name, tool_args)
-                    
+                    logger.info(
+                        "Hermes tool started: %s (args=%s)", tool_name, tool_args
+                    )
+
                     # Force flush any pending text (or sentence buffer) so TTS plays IMMEDIATELY before tool runs.
                     if sentence_buffer:
                         sentence = sentence_buffer
