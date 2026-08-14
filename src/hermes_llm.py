@@ -107,6 +107,7 @@ _DWELL_FILLERS = [
 # Timing thresholds
 _TOOL_FAST_THRESHOLD = 0.3  # seconds — tools faster than this get NO filler
 _DWELL_THRESHOLD = 4.0  # seconds of silence before dwell filler kicks in
+_EARLY_ACK_THRESHOLD = 2.0  # seconds — if LLM hasn't emitted first token/sentence in 2s, speak an ack filler
 
 
 class _FillerEngine:
@@ -179,6 +180,30 @@ class _FillerEngine:
         if self._filler_task is not None and not self._filler_task.done():
             self._filler_task.cancel()
             self._filler_task = None
+
+    async def schedule_early_ack(self, send_filler) -> None:
+        """Schedule an early acknowledge filler if the LLM takes > 2s to emit anything.
+
+        Fires if no speech or tool has started within _EARLY_ACK_THRESHOLD seconds,
+        preventing dead air during LLM API queue / latency spikes.
+        """
+        self.cancel_pending()
+
+        async def _fire() -> None:
+            await asyncio.sleep(_EARLY_ACK_THRESHOLD)
+            if not self._opening_filler_sent and self._t_last_spoken is None:
+                filler = _OPENING_FILLERS[
+                    hash(str(self._t_turn_start) + "early") % len(_OPENING_FILLERS)
+                ]
+                logger.info(
+                    "Filler engine: early ack filler after %.1fs TTFT latency",
+                    _EARLY_ACK_THRESHOLD,
+                )
+                await send_filler(filler)
+                self._opening_filler_sent = True
+                self.record_spoken()
+
+        self._filler_task = asyncio.create_task(_fire())
 
     async def schedule_opening(self, send_filler) -> None:
         """Schedule an opening filler if the tool is slow enough.
@@ -844,6 +869,9 @@ class HermesLLMStream(LLMStream):
                     got_ack = True
                     logger.info("Hermes submit ack: %s", data.get("result"))
                     hermes.publish_turn_state("start")
+                    # Schedule early acknowledge filler at 2.0s to prevent dead air
+                    # if the LLM provider experiences queue/latency spikes.
+                    await filler.schedule_early_ack(send_filler)
                     if dropped_stale:
                         logger.info(
                             "Drained %d stale event(s) from the previous turn",
