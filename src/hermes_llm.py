@@ -42,11 +42,11 @@ class _VoiceFlush(FlushSentinel):
 # NEVER reach Hermes (hermes_llm only forwards the last user message).
 # ---------------------------------------------------------------------------
 VOICE_INSTRUCTIONS = """\
-[VOICE MODE] You are on a voice call with the user (Schnee).
-- Respond in plain text with clear, human-friendly formatting.
-- Write numbers, dates, and amounts as standard digits (e.g. 25, 2026, 1.500) rather than spelling them out as long words.
-- Use clear, lightweight markdown formatting (such as bolding, lists, or inline code) when helpful for visual reading.
-- 1-3 sentences, conversational, one question at a time.
+[VOICE MODE] You are on an interactive realtime voice call with the user (Schnee).
+- Personality & Engagement: Be warm, proactive, and engaging. After answering or completing an action, proactively offer the next step, ask a helpful follow-up question, or suggest what to do next.
+- Keep replies conversational and spoken-friendly (2-3 concise sentences or a clean 3-4 bullet list).
+- Formatting: When listing items, use bullet points with '-' on new lines. Preserve natural paragraph breaks between ideas.
+- Write numbers, dates, and amounts as standard digits (e.g. 25, 2026, 1.500).
 - Delivery cues: start EVERY reply with a bracket cue describing how the first sentence should be delivered (e.g. [warm], [cheerful], [soft], [calm]). Cues are for TTS style and will be stripped automatically from the text display.
 - Language policy: ALWAYS reply in English. Switch to Indonesian ONLY when the user explicitly asks for Indonesian (e.g. "pakai bahasa Indonesia", "jawab dalam bahasa Indonesia", "ngomong bahasa Indonesia"). If the user switches back to Indonesian without such a request, keep replying in English.
 - When you need to look something up, search, or run any tool: FIRST speak one short, natural, and VARIED sentence indicating that you're looking into it (e.g. "Give me a quick moment.", "Checking that now.", "Hmm, let me see...", "I'll pull up the details.", "Looking into it right away."), THEN run the tool. Avoid always starting with 'Let me check...' every single time.
@@ -105,7 +105,7 @@ _DWELL_FILLERS = [
 
 # Timing thresholds
 _TOOL_FAST_THRESHOLD = 0.3  # seconds — tools faster than this get NO filler
-_DWELL_THRESHOLD = 4.0  # seconds of silence before dwell filler kicks in
+_DWELL_THRESHOLD = 7.5  # seconds of silence before dwell filler kicks in
 
 
 class _FillerEngine:
@@ -206,12 +206,10 @@ class _FillerEngine:
     async def schedule_dwell(self, send_filler) -> None:
         """Schedule a dwell filler for extended silence during multi-tool.
 
-        Only fires if: opening filler was already sent, AND no text has been
-        spoken for _DWELL_THRESHOLD seconds, AND the turn is still ongoing.
+        Fires if no text has been spoken for _DWELL_THRESHOLD seconds,
+        and the turn is still ongoing. Can repeat every _DWELL_THRESHOLD seconds
+        if multi-tool execution takes very long.
         """
-        if self._dwell_filler_sent or not self._opening_filler_sent:
-            return
-
         self.cancel_pending()
 
         async def _fire() -> None:
@@ -222,7 +220,8 @@ class _FillerEngine:
                 and self._loop.time() - self._t_last_spoken >= _DWELL_THRESHOLD - 0.5
             ):
                 filler = _DWELL_FILLERS[
-                    hash(str(self._t_turn_start) + "dwell") % len(_DWELL_FILLERS)
+                    hash(str(self._t_turn_start) + str(self._loop.time()) + "dwell")
+                    % len(_DWELL_FILLERS)
                 ]
                 logger.info(
                     "Filler engine: dwell filler after %.1fs silence", _DWELL_THRESHOLD
