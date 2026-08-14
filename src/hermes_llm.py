@@ -42,14 +42,15 @@ class _VoiceFlush(FlushSentinel):
 # NEVER reach Hermes (hermes_llm only forwards the last user message).
 # ---------------------------------------------------------------------------
 VOICE_INSTRUCTIONS = """\
-[VOICE MODE] You are on a voice call with the user.
+[VOICE MODE] You are on a voice call with the user (Schnee).
 - Respond in plain text with clear, human-friendly formatting.
 - Write numbers, dates, and amounts as standard digits (e.g. 25, 2026, 1.500) rather than spelling them out as long words.
 - Use clear, lightweight markdown formatting (such as bolding, lists, or inline code) when helpful for visual reading.
 - 1-3 sentences, conversational, one question at a time.
 - Delivery cues: start EVERY reply with a bracket cue describing how the first sentence should be delivered (e.g. [warm], [cheerful], [soft], [calm]). Cues are for TTS style and will be stripped automatically from the text display.
 - Language policy: ALWAYS reply in English. Switch to Indonesian ONLY when the user explicitly asks for Indonesian (e.g. "pakai bahasa Indonesia", "jawab dalam bahasa Indonesia", "ngomong bahasa Indonesia"). If the user switches back to Indonesian without such a request, keep replying in English.
-- When you need to look something up, search, or run any tool: FIRST speak one short natural sentence about what you're checking (e.g. "Let me take a quick look.", "Give me a second to check that."), THEN run the tool. Never go silent while a tool is working.
+- When you need to look something up, search, or run any tool: FIRST speak one short, natural, and VARIED sentence indicating that you're looking into it (e.g. "Give me a quick moment.", "Checking that now.", "Hmm, let me see...", "I'll pull up the details.", "Looking into it right away."), THEN run the tool. Avoid always starting with 'Let me check...' every single time.
+- IMPORTANT: If you need to run MULTIPLE tools in sequence, speak ONLY ONE opening sentence before the FIRST tool. Do NOT speak again between tools — stay silent until all tools complete, then give the final answer. Example: "Looking into that now..." [tool 1 runs silently] [tool 2 runs silently] [tool 3 runs silently] "Here's what I found..."
 - If asked for code or technical details: explain briefly in words; never output long unformatted code blocks."""
 
 # ---------------------------------------------------------------------------
@@ -74,25 +75,32 @@ VOICE_INSTRUCTIONS = """\
 # ---------------------------------------------------------------------------
 
 # Filler pools — rotated randomly so repeated calls don't sound canned.
-# Opening fillers: spoken when a slow tool starts (> 0.8s).
+# Opening fillers: spoken when a slow tool starts (> 0.3s).
 # Written to sound natural and conversational, not robotic.
+# Includes disfluency (hmm, uh, well) for human-like quality.
 _OPENING_FILLERS = [
     "[soft] Let me check that for you.",
     "[warm] Give me just a moment.",
-    "[gentle] One second, looking into it.",
-    "[soft] Let me take a quick look.",
-    "[warm] Checking on that now.",
+    "[gentle] One sec, looking into it.",
+    "[soft] Hmm, let me see...",
+    "[warm] Ah, checking now...",
     "[gentle] Just a moment, please.",
+    "[soft] Well, let me take a look.",
+    "[warm] Okay, one second...",
 ]
 
 # Dwell fillers: spoken when total silence exceeds 4s during multi-tool.
 # These acknowledge the wait without repeating the opening filler.
+# More casual and varied to sound like genuine thinking.
 _DWELL_FILLERS = [
     "[soft] Hmm, still looking...",
     "[warm] Almost there...",
     "[gentle] Just a bit longer...",
     "[soft] One more moment...",
     "[warm] Still working on it...",
+    "[soft] Bear with me...",
+    "[gentle] Taking a little longer than expected...",
+    "[warm] Hmm, this is quite thorough...",
 ]
 
 # Timing thresholds
@@ -116,6 +124,7 @@ class _FillerEngine:
         self._dwell_filler_sent = False
         self._filler_task: asyncio.Task | None = None
         self._tool_count = 0
+        self._active_tool_count = 0  # tools currently running
         self._last_tool_name = ""
         self._tool_active = False  # True between tool.generating and tool.complete
 
@@ -143,10 +152,11 @@ class _FillerEngine:
         self._dwell_filler_sent = False
 
     def record_tool_start(self, tool_name: str) -> bool:
-        """Record a tool starting. Returns True if this is the first tool."""
+        """Record a tool starting. Returns True if this is the FIRST tool."""
         self._tool_count += 1
-        self._last_tool_name = tool_name
+        self._active_tool_count += 1
         self._tool_active = True
+        self._last_tool_name = tool_name
         if self._t_first_tool_start is None:
             self._t_first_tool_start = self._loop.time()
             return True
@@ -154,7 +164,14 @@ class _FillerEngine:
 
     def record_tool_end(self) -> None:
         """Record a tool completing."""
-        self._tool_active = False
+        self._active_tool_count = max(0, self._active_tool_count - 1)
+        if self._active_tool_count == 0:
+            self._tool_active = False
+
+    @property
+    def has_active_tools(self) -> bool:
+        """True if any tool is currently running."""
+        return self._active_tool_count > 0
 
     def cancel_pending(self) -> None:
         """Cancel any pending filler task."""
@@ -502,6 +519,24 @@ class HermesLLM(llm.LLM):
         except Exception:
             logger.debug("publish_tool_activity failed", exc_info=True)
 
+    def publish_turn_state(self, state: str) -> None:
+        """Publish turn lifecycle states ('start', 'end') to the client room."""
+        room = self._room
+        if room is None:
+            return
+        try:
+            payload = json.dumps(
+                {
+                    "type": "jarvis.turn",
+                    "state": state,
+                }
+            )
+            asyncio.get_running_loop().create_task(
+                room.local_participant.publish_data(payload, reliable=True)
+            )
+        except Exception:
+            logger.debug("publish_turn_state failed", exc_info=True)
+
     @property
     def model(self) -> str:
         return "hermes-agent"
@@ -803,6 +838,7 @@ class HermesLLMStream(LLMStream):
                         raise RuntimeError(f"Submit failed: {data['error']}")
                     got_ack = True
                     logger.info("Hermes submit ack: %s", data.get("result"))
+                    hermes.publish_turn_state("start")
                     if dropped_stale:
                         logger.info(
                             "Drained %d stale event(s) from the previous turn",
@@ -881,6 +917,11 @@ class HermesLLMStream(LLMStream):
                                     "Dropped Hermes steering scaffold from reply stream"
                                 )
                                 continue
+                            # Skip newline-only chunks — they create paragraph
+                            # breaks in the client UI and serve no purpose
+                            # for TTS. Only process chunks with actual content.
+                            if not sentence.strip():
+                                continue
                             # Approach D (Hybrid): Send first sentence
                             # IMMEDIATELY — it doubles as the opening filler.
                             # The filler engine will cancel its own opening
@@ -895,6 +936,29 @@ class HermesLLMStream(LLMStream):
                             # sentences flow WITHOUT flush so the TTS sentence
                             # tokenizer batches them naturally (no paragraph-
                             # like gaps in the client UI).
+                            #
+                            # MULTI-TOOL SUPPRESSION: If ANY tool is actively
+                            # running (filler.has_active_tools), do NOT send LLM
+                            # text to TTS. The LLM may emit "Let me check..."
+                            # for every tool, which sounds robotic. We only
+                            # want the first opening sentence, then silence
+                            # until all tools complete.
+                            if filler.has_active_tools and t_first_sentence is not None:
+                                # Tools are running and we already sent opening —
+                                # buffer this text for later, don't send to TTS.
+                                logger.info(
+                                    "Suppressing LLM text during tool execution: %.40s",
+                                    sentence,
+                                )
+                                pending_text = True
+                                continue
+                            else:
+                                logger.info(
+                                    "NOT suppressing: has_active=%s, first_sent=%s, text=%.40s",
+                                    filler.has_active_tools,
+                                    t_first_sentence is not None,
+                                    sentence,
+                                )
                             if t_first_sentence is None:
                                 t_first_sentence = loop.time()
                                 logger.info(
@@ -902,7 +966,11 @@ class HermesLLMStream(LLMStream):
                                     t_first_sentence - t_submit,
                                     t_first_delta - t_submit if t_first_delta else 0,
                                 )
-                                await send_text(sentence, flush_after=True)
+                                # Flush after first sentence if this is an opening filler
+                                await send_text(
+                                    sentence,
+                                    flush_after=True,
+                                )
                             else:
                                 await send_text(sentence)
                             pending_text = True
@@ -1018,6 +1086,7 @@ class HermesLLMStream(LLMStream):
                         )
                         await send_text(sentence_buffer)
                         sentence_buffer = ""
+                    hermes.publish_turn_state("complete")
                     turn_over = True
                 elif event_type == "error":
                     # An error event IS a turn signal: the gateway emits

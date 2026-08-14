@@ -96,6 +96,7 @@ server = AgentServer(
     # job_memory_limit_mb: hard-kill a job process tree if it exceeds 600MB.
     num_idle_processes=0,
     job_memory_limit_mb=600,
+    load_threshold=0.95,
     # forkserver context orphans children (~350MB each) when jobs end because
     # the forkserver master holds them. "spawn" makes each job process fully
     # independent — dies clean, zero orphans, zero lingering RAM.
@@ -167,22 +168,16 @@ async def my_agent(ctx: JobContext):
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models at https://docs.livekit.io/agents/models/tts/
         tts=inference.TTS(model="fishaudio/s2.1-pro-free", voice=voice_id),
-        # VAD: silero min_silence_duration — how long a silence must be before
-        # the VAD declares "speech ended" and hands the decision to the turn
-        # detector. 0.25s (default) treats a quick breath as end-of-speech.
-        # 2026-08-14 v2: raised 0.5 → 0.7 after observing real sessions:
-        # Schnee's clause pauses (thinking mid-request) run 0.5-0.7s, and
-        # 0.5 fired END_OF_SPEECH inside them → premature turn commits
-        # ("Tes." committed, then "...Live TTS-nya doang tapi" redirected in
-        # 3s later). 0.7 keeps true turn-ends snappy while tolerating thought
-        # pauses. Must stay ≥ 0.25s (SDK floor for the turn detector).
-        vad=inference.VAD(model="silero", min_silence_duration=0.6),
+        # VAD & Endpointing: Standard Production Tuned
+        # min_silence_duration: 0.4s (VAD silence threshold)
+        # endpointing min_delay: 0.5s (snappy cut-off on finished speech)
+        vad=inference.VAD(model="silero", min_silence_duration=0.4),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(version="v1"),
             endpointing={
                 "mode": "dynamic",
-                "min_delay": 1.2,
-                "max_delay": 4.0,
+                "min_delay": 0.5,
+                "max_delay": 2.5,
                 "alpha": 0.7,
             },
             interruption=InterruptionOptions(
@@ -207,6 +202,11 @@ async def my_agent(ctx: JobContext):
     # Shared Hermes bridge: created before the agent so the session can
     # bind the room after start() (tool-activity chip events → client).
     hermes = HermesLLM(model_override=model_override)
+
+    # Warm-up: proactively establish WS connection and create Hermes session
+    # in background during room startup so turn #1 has 0ms connection latency.
+    warmup_task = asyncio.create_task(hermes._ensure_session())
+    ctx.add_shutdown_callback(lambda: warmup_task.cancel())
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
