@@ -68,11 +68,11 @@ VOICE_INSTRUCTIONS = """\
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Lapis 2 — Sentence splitter + cleaner (TTS safety net).
+# Lapis 2 — Sentence & Clause splitter + cleaner (TTS safety net).
 # ---------------------------------------------------------------------------
-_BOUNDARY_CHARS = ".!?\n"
-_MIN_SENTENCE_LEN = 12  # guards abbreviations/decimals ("Dr.", "3.14")
-_MAX_PENDING_LEN = 400  # force-cut so TTS latency stays bounded
+_BOUNDARY_CHARS = ".!?,;\n"
+_MIN_SENTENCE_LEN = 6  # Reduced 12 -> 6 so first short clause ("Tentu,", "Baik,") streams instantly to TTS
+_MAX_PENDING_LEN = 250  # Lowered from 400 to force-cut long clauses sooner
 
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")
 _INLINE_CODE_RE = re.compile(r"`([^`\n]*)`")
@@ -125,7 +125,6 @@ def contains_scaffold(text: str) -> bool:
     low = text.lower()
     return any(marker in low for marker in _SCAFFOLD_MARKERS)
 
-
 def clean_voice_text(text: str) -> str:
     """Strip markdown/emoji/URLs/control chars from one chunk of voice text.
 
@@ -152,8 +151,8 @@ def clean_voice_text(text: str) -> str:
     # numeric citations [1] survive. Mirror of client BRACKET_CUE_RE.
     s = re.sub(r"\[[A-Za-z][A-Za-z -]{1,40}\]", "", s)
 
-    # 1c. Hermes steering scaffolding (interruption markers) — drop entire
-    # chunks that are scaffolding, and strip inline markers otherwise.
+    # 1c. Hermes steering scaffolding (interruption markers) & orphan brackets —
+    # drop entire chunks that are scaffolding, and strip inline markers or orphan ]
     s = re.sub(
         r"\[?\b(?:This response was interrupted by a user correction\.?"
         r"|Visible response before the interruption:?"
@@ -162,6 +161,8 @@ def clean_voice_text(text: str) -> str:
         s,
         flags=re.IGNORECASE,
     )
+    # Strip standalone/orphan brackets like "]" or "[" left over after cue stripping
+    s = re.sub(r"^\s*\]\s*|\s*\[\s*$", "", s)
 
     # 2. Code fences → spoken placeholder; inline code keeps its text.
     s = _CODE_FENCE_RE.sub(" [potongan kode] ", s)
@@ -258,11 +259,13 @@ class HermesLLM(llm.LLM):
         *,
         ws_url: str = "ws://127.0.0.1:9119/api/ws",
         token: str | None = None,
+        model_override: str | None = None,
     ) -> None:
         super().__init__()
         self._ws_url = ws_url
         # Prefer env (set in .env.local); fallback keeps old setups working.
         self._token = token or os.environ.get("HERMES_WS_TOKEN", "")
+        self._model_override = model_override
         self._ws: Any = None
         # Room handle for publishing tool-activity events to the UI chip
         # (Gemini/Claude-style "Searching the web…" indicator). Bound by
@@ -284,7 +287,9 @@ class HermesLLM(llm.LLM):
         """Attach the LiveKit room so tool-activity events can be published."""
         self._room = room
 
-    def publish_tool_activity(self, state: str, tool_name: str) -> None:
+    def publish_tool_activity(
+        self, state: str, tool_name: str, args: dict | None = None
+    ) -> None:
         """Best-effort publish of tool start/end to the room.
 
         The UI renders this as a Gemini/Claude-style activity chip
@@ -296,7 +301,12 @@ class HermesLLM(llm.LLM):
             return
         try:
             payload = json.dumps(
-                {"type": "jarvis.tool", "state": state, "name": tool_name}
+                {
+                    "type": "jarvis.tool",
+                    "state": state,
+                    "name": tool_name,
+                    "args": args or {},
+                }
             )
             asyncio.get_running_loop().create_task(
                 room.local_participant.publish_data(payload, reliable=True)
@@ -370,15 +380,18 @@ class HermesLLM(llm.LLM):
             # Create session
             self._message_id += 1
             create_id = self._message_id
+            params: dict[str, Any] = {
+                "title": f"livekit-{asyncio.get_event_loop().time()}"
+            }
+            if self._model_override:
+                params["model"] = self._model_override
             await ws.send(
                 json.dumps(
                     {
                         "jsonrpc": "2.0",
                         "id": create_id,
                         "method": "session.create",
-                        "params": {
-                            "title": f"livekit-{asyncio.get_event_loop().time()}"
-                        },
+                        "params": params,
                     }
                 )
             )
@@ -665,19 +678,22 @@ class HermesLLMStream(LLMStream):
                 elif event_type == "tool.generating":
                     seen_turn_signal = True
                     tool_name = payload.get("name", "?")
-                    logger.info("Hermes tool started: %s", tool_name)
-                    # UI progress row: "Searching the web…". The client keeps
-                    # a permanent per-tool log (Gemini/Claude style) — the
-                    # visual replaces voice fillers entirely.
-                    hermes.publish_tool_activity("start", tool_name)
-                    # Release any text still held in the TTS sentence buffer
-                    # (e.g. the opening "I'll check..." sentence) so it is
-                    # synthesized and plays WHILE the tool runs. This keeps
-                    # the voice pattern to exactly two moments: opening
-                    # sentence + final result. No filler chatter in between.
+                    tool_args = payload.get("args", {})
+                    logger.info("Hermes tool started: %s (args=%s)", tool_name, tool_args)
+                    
+                    # Force flush any pending text (or sentence buffer) so TTS plays IMMEDIATELY before tool runs.
+                    if sentence_buffer:
+                        cleaned = clean_voice_text(sentence_buffer)
+                        sentence_buffer = ""
+                        if cleaned:
+                            await send_text(cleaned)
+                            pending_text = True
                     if pending_text:
                         logger.info("Flushing pending text before tool: %s", tool_name)
                         await flush_segment()
+
+                    # Publish tool activity AFTER text is flushed so TTS stream is opened FIRST
+                    hermes.publish_tool_activity("start", tool_name, tool_args)
                 elif event_type == "tool.complete":
                     if not seen_turn_signal:
                         continue  # stale tail of the barged-in turn
