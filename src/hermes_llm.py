@@ -193,6 +193,28 @@ def clean_voice_text(text: str) -> str:
     # 8. Normalize repeated punctuation.
     s = _REPEAT_PUNCT_RE.sub(r"\1", s)
 
+    # 8b. Normalize numbers/digits to spoken words (Indonesian/English) for Fish Audio TTS
+    try:
+        from num2words import num2words
+
+        def _replace_num(match: re.Match) -> str:
+            val_str = match.group(0)
+            try:
+                if "." in val_str:
+                    num = float(val_str)
+                    return num2words(num, lang="id").replace("point", "koma")
+                else:
+                    num = int(val_str)
+                    return num2words(num, lang="id")
+            except Exception:
+                return val_str
+
+        # Replace numbers that are not inside bracket citations like [1]
+        # Match floats/ints not preceded/followed by brackets
+        s = re.sub(r"(?<!\[)\b\d+(?:\.\d+)?\b(?!\])", _replace_num, s)
+    except Exception:
+        pass
+
     # 9. Whitespace: newlines → space (voice text is read linearly), collapse
     # runs, cap blank lines, trim. (Newlines must become SPACES, not vanish,
     # or consecutive sentences run together: "Schnee.Semua sistem".)
