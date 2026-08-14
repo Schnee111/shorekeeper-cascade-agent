@@ -32,6 +32,7 @@ async def get_token(request):
     identity = request.query.get("identity", "schnee")
     voice_key = request.query.get("voice", DEFAULT_VOICE)
     voice_id = VOICES.get(voice_key, VOICES[DEFAULT_VOICE])
+    model = request.query.get("model", "")
 
     room_config = api.RoomConfiguration(
         agents=[api.RoomAgentDispatch(agent_name="jarvis")]
@@ -44,6 +45,10 @@ async def get_token(request):
         can_subscribe=True,
     )
 
+    attributes = {"voice": voice_id}
+    if model:
+        attributes["model"] = model
+
     token = (
         api.AccessToken(
             os.getenv("LIVEKIT_API_KEY"),
@@ -53,7 +58,7 @@ async def get_token(request):
         .with_name(identity)
         .with_grants(grant)
         .with_room_config(room_config)
-        .with_attributes({"voice": voice_id})
+        .with_attributes(attributes)
         .to_jwt()
     )
 
@@ -77,3 +82,7 @@ app.router.add_options(
         }
     ),
 )
+
+if __name__ == "__main__":
+    web.run_app(app, port=8082)
+
