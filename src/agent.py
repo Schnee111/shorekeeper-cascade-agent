@@ -4,6 +4,7 @@ import random
 import textwrap
 
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit.agents import (
     Agent,
     AgentServer,
@@ -15,7 +16,6 @@ from livekit.agents import (
     inference,
     room_io,
 )
-from livekit import rtc
 from livekit.plugins import ai_coustics, deepgram
 
 from hermes_llm import HermesLLM
@@ -86,7 +86,21 @@ class Assistant(Agent):
     #     return "sunny with a temperature of 70 degrees."
 
 
-server = AgentServer()
+server = AgentServer(
+    # 2026-08-14 — RAM discipline on a 3.6GB VPS. Default prod spawns 2 idle
+    # forkserver processes (~350MB each) + 1 forkserver master = ~1GB baseline
+    # before any job runs. Every voice/model switch adds a job process with
+    # its own forkserver child. With idle=2, switching 3-4x stacked ~2.8GB
+    # and triggered swap thrash / "worker at full capacity".
+    # num_idle_processes=0: no pre-warmed forkservers; spawn on demand only.
+    # job_memory_limit_mb: hard-kill a job process tree if it exceeds 600MB.
+    num_idle_processes=0,
+    job_memory_limit_mb=600,
+    # forkserver context orphans children (~350MB each) when jobs end because
+    # the forkserver master holds them. "spawn" makes each job process fully
+    # independent — dies clean, zero orphans, zero lingering RAM.
+    multiprocessing_context="spawn",
+)
 
 
 # Greeting pool, addressed to the user (Schnee). Fish Audio S2.1-pro-free
@@ -214,16 +228,56 @@ async def my_agent(ctx: JobContext):
     # process lingers 30-45s (room empty_timeout + graceful drain) after the
     # browser tab closes or a voice switch. Voice switching creates a NEW
     # room each time, so rapid switching spawned 3-4 overlapping processes
-    # (~300MB each) → RAM exhaustion → swap thrash → "worker at full
-    # capacity" → LiveKit concurrent-job limit notifications. The client
-    # never reconnects to the same room (room name is random per session),
-    # so there is nothing to wait for once the user participant is gone.
+    # (~350MB each incl. forkserver children) → RAM exhaustion → swap thrash
+    # → "worker at full capacity" → LiveKit concurrent-job limit notifications.
+    # The client never reconnects to the same room (room name is random per
+    # session), so there is nothing to wait for once the user participant is
+    # gone.
+    #
+    # ctx.shutdown() alone leaves forkserver/plugin children orphaned (they
+    # hold ~350MB each and outlive the job). We kill only THIS job's process
+    # tree — NOT the whole worker group — by walking /proc for children of
+    # the current PID after a brief drain window.
+    import contextlib
+    import os
+    import signal
+
+    def _kill_own_tree() -> None:
+        """SIGKILL this process and all its descendants (forkserver, plugin
+        children) without touching sibling jobs or the main worker."""
+        me = os.getpid()
+        try:
+            # Collect all descendants by scanning /proc
+            children: list[int] = []
+            for pid_dir in os.listdir("/proc"):
+                if not pid_dir.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{pid_dir}/stat") as f:
+                        parts = f.read().split()
+                        # Field 4 (index 3) is PPID
+                        if int(parts[3]) == me:
+                            children.append(int(pid_dir))
+                except (FileNotFoundError, IndexError, ValueError):
+                    continue
+            # Kill children first, then self
+            for child in children:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(child, signal.SIGKILL)
+            os.kill(me, signal.SIGKILL)
+        except Exception:
+            # Fallback: at least kill self
+            os._exit(1)
+
     def _on_participant_disconnected(participant) -> None:
         if participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT:
-            logger.info(
-                "User left room %s — shutting down job process", ctx.room.name
-            )
+            logger.info("User left room %s — shutting down job process", ctx.room.name)
             ctx.shutdown("user left")
+            # Give ctx.shutdown() ~2s to drain gracefully, then force-kill
+            # THIS job's tree so forkserver/plugin children don't orphan
+            # and hold RAM across voice/model switches.
+            loop = asyncio.get_running_loop()
+            loop.call_later(2.0, _kill_own_tree)
 
     ctx.room.on("participant_disconnected", _on_participant_disconnected)
 
