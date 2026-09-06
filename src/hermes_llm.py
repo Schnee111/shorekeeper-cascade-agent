@@ -102,7 +102,7 @@ _DWELL_FILLERS = [
 
 # Timing thresholds (grounded in HCI conversational turn-taking literature)
 _TOOL_FAST_THRESHOLD = 0.8  # seconds — snappy tools (<0.8s) get NO filler, straight to answer
-_DWELL_THRESHOLD = 4.5  # seconds of silence before dwell filler kicks in
+_DWELL_THRESHOLD = 4.0  # seconds of continuous tool silence before a dwell filler kicks in
 _EARLY_ACK_THRESHOLD = 2.8  # seconds — respects natural human cognitive pause (1.5-2.5s) before soft disfluency
 
 
@@ -212,13 +212,14 @@ class _FillerEngine:
 
         send_filler is an async callable that takes a filler string and
         sends it to TTS. This method waits _TOOL_FAST_THRESHOLD seconds;
-        if the tool hasn't completed by then, it fires the filler.
+        if the tool hasn't completed by then, it fires the filler, then
+        automatically transitions into the periodic dwell loop.
         """
         self.cancel_pending()
 
         async def _fire() -> None:
             await asyncio.sleep(_TOOL_FAST_THRESHOLD)
-            if not self._opening_filler_sent:
+            if not self._opening_filler_sent and self._tool_active:
                 filler = _OPENING_FILLERS[
                     hash(str(self._t_turn_start)) % len(_OPENING_FILLERS)
                 ]
@@ -229,34 +230,53 @@ class _FillerEngine:
                 self._opening_filler_sent = True
                 self.record_spoken()
 
+            # If tool is STILL active after opening filler, keep pulsing dwell filler
+            # every _DWELL_THRESHOLD seconds so the user knows progress continues.
+            while self._tool_active:
+                await asyncio.sleep(_DWELL_THRESHOLD)
+                if self._tool_active and (
+                    self._t_last_spoken is not None
+                    and self._loop.time() - self._t_last_spoken >= _DWELL_THRESHOLD - 0.5
+                ):
+                    filler = _DWELL_FILLERS[
+                        hash(str(self._t_turn_start) + str(self._loop.time()) + "dwell")
+                        % len(_DWELL_FILLERS)
+                    ]
+                    logger.info(
+                        "Filler engine: dwell filler after %.1fs silence", _DWELL_THRESHOLD
+                    )
+                    await send_filler(filler)
+                    self._dwell_filler_sent = True
+                    self.record_spoken()
+
         self._filler_task = asyncio.create_task(_fire())
 
     async def schedule_dwell(self, send_filler) -> None:
-        """Schedule a dwell filler for extended silence during multi-tool.
+        """Schedule a periodic dwell filler for extended silence during tool execution.
 
-        Fires if no text has been spoken for _DWELL_THRESHOLD seconds,
-        and the turn is still ongoing. Can repeat every _DWELL_THRESHOLD seconds
-        if multi-tool execution takes very long.
+        Fires every _DWELL_THRESHOLD seconds while tools are actively running and
+        no text has been spoken, ensuring the user knows progress is ongoing.
         """
         self.cancel_pending()
 
         async def _fire() -> None:
-            await asyncio.sleep(_DWELL_THRESHOLD)
-            # Check if we've been silent the whole time
-            if (
-                self._t_last_spoken is not None
-                and self._loop.time() - self._t_last_spoken >= _DWELL_THRESHOLD - 0.5
-            ):
-                filler = _DWELL_FILLERS[
-                    hash(str(self._t_turn_start) + str(self._loop.time()) + "dwell")
-                    % len(_DWELL_FILLERS)
-                ]
-                logger.info(
-                    "Filler engine: dwell filler after %.1fs silence", _DWELL_THRESHOLD
-                )
-                await send_filler(filler)
-                self._dwell_filler_sent = True
-                self.record_spoken()
+            while True:
+                await asyncio.sleep(_DWELL_THRESHOLD)
+                # If a tool is still running and we have been silent long enough
+                if self._tool_active and (
+                    self._t_last_spoken is not None
+                    and self._loop.time() - self._t_last_spoken >= _DWELL_THRESHOLD - 0.5
+                ):
+                    filler = _DWELL_FILLERS[
+                        hash(str(self._t_turn_start) + str(self._loop.time()) + "dwell")
+                        % len(_DWELL_FILLERS)
+                    ]
+                    logger.info(
+                        "Filler engine: dwell filler after %.1fs silence", _DWELL_THRESHOLD
+                    )
+                    await send_filler(filler)
+                    self._dwell_filler_sent = True
+                    self.record_spoken()
 
         self._filler_task = asyncio.create_task(_fire())
 
