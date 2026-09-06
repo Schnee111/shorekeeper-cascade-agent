@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.0...shorekeeper-cascade-agent-v1.7.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* **deps:** sync uv.lock with v1.7.0 ([435482c](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/435482c8472c3210f125bd412d3f299041913482))
+
 ## [1.7.0](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.6.0...shorekeeper-cascade-agent-v1.7.0) (2026-09-06)
 
 
