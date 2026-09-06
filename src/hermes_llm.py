@@ -20,6 +20,10 @@ logger = logging.getLogger("hermes-llm")
 # unresponsive. In practice it arrives in <50ms; 30s only catches real hangs.
 SUBMIT_ACK_TIMEOUT = 30.0
 
+# Max idle time between WebSocket events during an active turn before declaring
+# the connection hung or stalled. Prevents permanent turn lock deadlock.
+ACTIVITY_TIMEOUT = 45.0
+
 
 class _VoiceFlush(FlushSentinel):
     """FlushSentinel with a no-op `.id`/`.delta` surface.
@@ -371,14 +375,21 @@ def clean_voice_text(text: str) -> str:
     # Absorb surrounding whitespace so "you — what" becomes "you, what".
     s = re.sub(r"\s*[\u2014\u2013]\s*", ", ", s)
 
-    # 1b. Fish Audio bracket prosody cues ([warm], [soft], [with quiet
+    # 2. Code fences → spoken placeholder; inline code keeps its text.
+    s = _CODE_FENCE_RE.sub(" [potongan kode] ", s)
+    s = _INLINE_CODE_RE.sub(r"\1", s)
+
+    # 3. Markdown links → link text (MUST run before bracket cues so [doc](url) isn't mangled).
+    s = _MD_LINK_RE.sub(r"\1", s)
+
+    # 3a. Fish Audio bracket prosody cues ([warm], [soft], [with quiet
     # enthusiasm]) — the LLM is prompted to emit them for delivery variety
     # and Fish S2.1-pro renders them as vocal style. They must NEVER reach
     # the transcript/subtitles. Case-insensitive, letters/spaces/hyphens so
     # numeric citations [1] survive. Mirror of client BRACKET_CUE_RE.
     s = re.sub(r"\[[A-Za-z][A-Za-z -]{1,40}\]", "", s)
 
-    # 1c. Hermes steering scaffolding (interruption markers) & orphan brackets —
+    # 3b. Hermes steering scaffolding (interruption markers) & orphan brackets —
     # drop entire chunks that are scaffolding, and strip inline markers or orphan ]
     s = re.sub(
         r"\[?\b(?:This response was interrupted by a user correction\.?"
@@ -390,13 +401,6 @@ def clean_voice_text(text: str) -> str:
     )
     # Strip standalone/orphan brackets like "]" or "[" left over after cue stripping
     s = re.sub(r"^\s*\]\s*|\s*\[\s*$", "", s)
-
-    # 2. Code fences → spoken placeholder; inline code keeps its text.
-    s = _CODE_FENCE_RE.sub(" [potongan kode] ", s)
-    s = _INLINE_CODE_RE.sub(r"\1", s)
-
-    # 3. Markdown links → link text.
-    s = _MD_LINK_RE.sub(r"\1", s)
 
     # 4. URLs / emails → spoken words.
     s = _URL_RE.sub("link", s)
@@ -482,8 +486,14 @@ def _split_sentence(buffer: str) -> tuple[str | None, str]:
     if len(buffer) > _MAX_PENDING_LEN:
         cut = buffer.rfind(" ")
         if cut > 0:
-            return buffer[:cut], buffer[cut:].lstrip()
-        return buffer, ""
+            chunk = buffer[:cut].rstrip()
+            if chunk and chunk[-1] not in ".!?,;:":
+                chunk += ","
+            return chunk, buffer[cut:].lstrip()
+        chunk = buffer.rstrip()
+        if chunk and chunk[-1] not in ".!?,;:":
+            chunk += ","
+        return chunk, ""
     return None, buffer
 
 
@@ -924,7 +934,22 @@ class HermesLLMStream(LLMStream):
             # completions that forced the user to repeat themselves.
             seen_turn_signal = False
             while not turn_over:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=ACTIVITY_TIMEOUT)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Hermes turn activity timeout (%.1fs) exceeded. Stalled turn terminating.",
+                        ACTIVITY_TIMEOUT,
+                    )
+                    hermes._invalidate_connection()
+                    if spoken_any is False:
+                        await send_text(
+                            "[calm] Sorry, the assistant connection timed out. "
+                            "Can you try that again?",
+                            flush_after=True,
+                        )
+                    turn_over = True
+                    break
 
                 if isinstance(item, BaseException):
                     hermes._invalidate_connection()
@@ -982,7 +1007,9 @@ class HermesLLMStream(LLMStream):
                                     "Dropped Hermes steering scaffold from reply stream"
                                 )
                                 continue
-                            # Skip newline-only chunks — they create paragraph
+                            # Clean voice text before sending to TTS and transcript
+                            sentence = clean_voice_text(sentence)
+                            # Skip newline-only / whitespace-only chunks — they create paragraph
                             # breaks in the client UI and serve no purpose
                             # for TTS. Only process chunks with actual content.
                             if not sentence.strip():
@@ -1056,18 +1083,19 @@ class HermesLLMStream(LLMStream):
                     # (or partial sentence in buffer), flush it to TTS immediately before
                     # the tool executes so speech starts with zero delay.
                     if sentence_buffer.strip():
-                        sentence = sentence_buffer.strip()
+                        sentence = clean_voice_text(sentence_buffer.strip())
                         sentence_buffer = ""
-                        if t_first_sentence is None:
-                            t_first_sentence = loop.time()
-                            logger.info(
-                                "Flushing LLM opening sentence before tool: %.60s",
-                                sentence[:60],
-                            )
-                            await send_text(sentence, flush_after=True)
-                        else:
-                            await send_text(sentence)
-                        pending_text = True
+                        if sentence:
+                            if t_first_sentence is None:
+                                t_first_sentence = loop.time()
+                                logger.info(
+                                    "Flushing LLM opening sentence before tool: %.60s",
+                                    sentence[:60],
+                                )
+                                await send_text(sentence, flush_after=True)
+                            else:
+                                await send_text(sentence)
+                            pending_text = True
 
                     if pending_text:
                         logger.info("Flushing pending text before tool: %s", tool_name)
@@ -1112,13 +1140,15 @@ class HermesLLMStream(LLMStream):
                     # running. This is the actual answer content that the LLM
                     # produced before or during the tool call.
                     if sentence_buffer.strip():
+                        flushed_text = clean_voice_text(sentence_buffer.strip())
                         logger.info(
                             "Flushing buffered text after tool: %.60s…",
-                            sentence_buffer[:60],
+                            flushed_text[:60],
                         )
-                        await send_text(sentence_buffer)
+                        if flushed_text:
+                            await send_text(flushed_text)
+                            pending_text = True
                         sentence_buffer = ""
-                        pending_text = True
                     hermes.publish_tool_activity("complete", "?")
                 elif event_type in (
                     "message.complete",
@@ -1146,11 +1176,13 @@ class HermesLLMStream(LLMStream):
                     # tool.complete. This is the safety net for turns that
                     # never triggered a tool.
                     if sentence_buffer.strip():
+                        flushed_text = clean_voice_text(sentence_buffer.strip())
                         logger.info(
                             "Flushing buffered text at turn end: %.60s…",
-                            sentence_buffer[:60],
+                            flushed_text[:60],
                         )
-                        await send_text(sentence_buffer)
+                        if flushed_text:
+                            await send_text(flushed_text)
                         sentence_buffer = ""
                     hermes.publish_turn_state("complete")
                     turn_over = True
@@ -1177,4 +1209,6 @@ class HermesLLMStream(LLMStream):
 
         # Flush any trailing partial sentence.
         if sentence_buffer.strip():
-            await send_text(sentence_buffer)
+            trailing_text = clean_voice_text(sentence_buffer.strip())
+            if trailing_text:
+                await send_text(trailing_text)

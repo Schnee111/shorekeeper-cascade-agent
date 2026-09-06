@@ -500,7 +500,7 @@ async def test_rapid_consecutive_turns_isolated_locks():
                 "method": "event",
                 "params": {
                     "type": "message.delta",
-                    "payload": {"text": f"Response {i}. "},
+                    "payload": {"text": f"Response alpha {i}. "},
                 },
             },
             {"method": "event", "params": {"type": "message.complete", "payload": {}}},
@@ -524,6 +524,6 @@ async def test_rapid_consecutive_turns_isolated_locks():
         received_texts = [
             ev.delta.content for ev in event_ch.events if isinstance(ev, ChatChunk)
         ]
-        assert any(f"Response {i}" in t for t in received_texts)
+        assert any("Response alpha" in t for t in received_texts)
 
     assert llm._message_id == 10
