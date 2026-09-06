@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.10](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.9...shorekeeper-cascade-agent-v1.7.10) (2026-09-06)
+
+
+### Bug Fixes
+
+* **tts:** support English number normalization and strip bullet dashes in clean_voice_text ([86a4752](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/86a47529f15ef05a0cf206c1bfb03e07e25f1ac6))
+
 ## [1.7.9](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.8...shorekeeper-cascade-agent-v1.7.9) (2026-09-06)
 
 
