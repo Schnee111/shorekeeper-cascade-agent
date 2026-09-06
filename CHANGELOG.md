@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.5](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.4...shorekeeper-cascade-agent-v1.7.5) (2026-09-06)
+
+
+### Bug Fixes
+
+* **audio:** re-enable clean_voice_text in streaming pipeline with corrected regex precedence and timeout guard ([#13](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/13), [#14](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/14), [#15](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/15)) ([d5a37bb](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/d5a37bb0f2d1c6d299ad81d675ba210377b68cb8))
+
 ## [1.7.4](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.3...shorekeeper-cascade-agent-v1.7.4) (2026-09-06)
 
 
