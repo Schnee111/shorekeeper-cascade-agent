@@ -32,18 +32,25 @@ async def main() -> None:
         # gateway.ready
         async for raw in ws:
             data = json.loads(raw)
-            if data.get("method") == "event" and data.get("params", {}).get(
-                "type"
-            ) == "gateway.ready":
+            if (
+                data.get("method") == "event"
+                and data.get("params", {}).get("type") == "gateway.ready"
+            ):
                 print(f"{ts()} gateway.ready")
                 break
             print(f"{ts()} FRAME: {raw[:200]}")
 
         # session.create
-        await ws.send(json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "session.create",
-            "params": {"title": f"probe-{int(time.time())}"},
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "session.create",
+                    "params": {"title": f"probe-{int(time.time())}"},
+                }
+            )
+        )
         sid = None
         async for raw in ws:
             data = json.loads(raw)
@@ -53,10 +60,16 @@ async def main() -> None:
                 break
 
         # session.activate
-        await ws.send(json.dumps({
-            "jsonrpc": "2.0", "id": 2, "method": "session.activate",
-            "params": {"session_id": sid},
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "session.activate",
+                    "params": {"session_id": sid},
+                }
+            )
+        )
         async for raw in ws:
             data = json.loads(raw)
             print(f"{ts()} FRAME: {raw[:300]}")
@@ -64,18 +77,33 @@ async def main() -> None:
                 break
 
         # prompt.submit
-        await ws.send(json.dumps({
-            "jsonrpc": "2.0", "id": 3, "method": "prompt.submit",
-            "params": {"session_id": sid, "text": "Jam berapa sekarang? Jawab singkat."},
-        }))
+        await ws.send(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": sid,
+                        "text": "Jam berapa sekarang? Jawab singkat.",
+                    },
+                }
+            )
+        )
         print(f"{ts()} submitted prompt")
 
         async for raw in ws:
             data = json.loads(raw)
-            t = data.get("params", {}).get("type", "") if data.get("method") == "event" else f"rpc id={data.get('id')}"
+            t = (
+                data.get("params", {}).get("type", "")
+                if data.get("method") == "event"
+                else f"rpc id={data.get('id')}"
+            )
             extra = ""
             if t == "message.delta":
-                extra = " TEXT=" + json.dumps(data["params"]["payload"].get("text", "")[:60])
+                extra = " TEXT=" + json.dumps(
+                    data["params"]["payload"].get("text", "")[:60]
+                )
             elif t == "message.complete":
                 extra = " PAYLOAD=" + str(data["params"].get("payload", {}))[:250]
             print(f"{ts()} EVENT {t}{extra}")
@@ -85,7 +113,11 @@ async def main() -> None:
                     while True:
                         raw2 = await asyncio.wait_for(ws.recv(), timeout=2.0)
                         d2 = json.loads(raw2)
-                        t2 = d2.get("params", {}).get("type", "") if d2.get("method") == "event" else f"rpc id={d2.get('id')}"
+                        t2 = (
+                            d2.get("params", {}).get("type", "")
+                            if d2.get("method") == "event"
+                            else f"rpc id={d2.get('id')}"
+                        )
                         print(f"{ts()} AFTER-COMPLETE EVENT {t2}: {raw2[:250]}")
                 except asyncio.TimeoutError:
                     pass

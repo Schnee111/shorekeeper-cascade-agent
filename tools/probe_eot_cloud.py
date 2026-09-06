@@ -11,18 +11,15 @@ Usage: .venv/bin/python tools/probe_eot_cloud.py
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from pathlib import Path
 
+import numpy as np
 from dotenv import load_dotenv
+from livekit import rtc
+from livekit.agents.inference.eot import TurnDetector
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env.local")
-
-import numpy as np
-from livekit import rtc
-
-from livekit.agents.inference.eot import TurnDetector
 
 SAMPLE_RATE = 16000
 
@@ -31,7 +28,9 @@ def make_frame(seconds: float, freq: float = 220.0) -> rtc.AudioFrame:
     n = int(SAMPLE_RATE * seconds)
     t = np.arange(n) / SAMPLE_RATE
     data = (4000 * np.sin(2 * np.pi * freq * t)).astype(np.int16).tobytes()
-    return rtc.AudioFrame(data=data, sample_rate=SAMPLE_RATE, num_channels=1, samples_per_channel=n)
+    return rtc.AudioFrame(
+        data=data, sample_rate=SAMPLE_RATE, num_channels=1, samples_per_channel=n
+    )
 
 
 async def main() -> int:
@@ -56,16 +55,22 @@ async def main() -> int:
         try:
             ev = await asyncio.wait_for(fut, timeout=8.0)
             dt = time.time() - t_start
-            degraded = getattr(stream, "is_fallback", False) or getattr(stream, "is_degraded", False)
+            degraded = getattr(stream, "is_fallback", False) or getattr(
+                stream, "is_degraded", False
+            )
             print(f"RESULT: prediction received in {dt:.2f}s (SDK timeout: 1.0s)")
             print(f"  end_of_turn_probability: {ev.end_of_turn_probability:.3f}")
             print(f"  type: {ev.type}")
             print(f"  transport: {'LOCAL FALLBACK' if degraded else 'CLOUD v1'}")
             ok = dt < 1.0
-            print(f"  within SDK timeout: {'YES' if ok else 'NO — timeout causes VAD-only commits'}")
+            print(
+                f"  within SDK timeout: {'YES' if ok else 'NO — timeout causes VAD-only commits'}"
+            )
             return 0 if ok else 2
         except asyncio.TimeoutError:
-            print(f"RESULT: NO prediction within 8s — cloud path broken (fallback/degraded)")
+            print(
+                "RESULT: NO prediction within 8s — cloud path broken (fallback/degraded)"
+            )
             return 1
         finally:
             push_task.cancel()

@@ -19,7 +19,9 @@ import urllib.request
 import edge_tts
 from livekit import rtc
 
-logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(
+    level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s"
+)
 logger = logging.getLogger("e2e")
 logger.setLevel(logging.INFO)
 
@@ -46,8 +48,17 @@ def load_pcm(mp3_path: str, wav_path: str) -> tuple[bytes, int]:
 
     subprocess.run(
         [
-            "ffmpeg", "-y", "-i", mp3_path,
-            "-ar", "48000", "-ac", "1", "-f", "s16le", wav_path,
+            "ffmpeg",
+            "-y",
+            "-i",
+            mp3_path,
+            "-ar",
+            "48000",
+            "-ac",
+            "1",
+            "-f",
+            "s16le",
+            wav_path,
         ],
         check=True,
         capture_output=True,
@@ -63,7 +74,12 @@ async def main() -> None:
     logger.info("Generating speech: %r", USER_TEXT)
     await gen_speech(USER_TEXT, "/tmp/e2e_speech.mp3")
     pcm, sample_rate = load_pcm("/tmp/e2e_speech.mp3", "/tmp/e2e_speech.pcm")
-    logger.info("PCM ready: %d bytes @ %dHz (%.1fs)", len(pcm), sample_rate, len(pcm) / 2 / sample_rate)
+    logger.info(
+        "PCM ready: %d bytes @ %dHz (%.1fs)",
+        len(pcm),
+        sample_rate,
+        len(pcm) / 2 / sample_rate,
+    )
 
     token = await fetch_token(ROOM_NAME)
     logger.info("Token fetched, room=%s", ROOM_NAME)
@@ -134,8 +150,12 @@ async def main() -> None:
     await room.disconnect()
 
     logger.info("=" * 50)
-    logger.info("RESULTS: greeting=%s user_stt=%s agent_reply=%s",
-                results["greeting"], results["user_stt"], results["agent_reply"])
+    logger.info(
+        "RESULTS: greeting=%s user_stt=%s agent_reply=%s",
+        results["greeting"],
+        results["user_stt"],
+        results["agent_reply"],
+    )
     logger.info("=" * 50)
     for line in transcript_lines:
         logger.info("  %s", line)
