@@ -6,9 +6,7 @@ to verify that LLM text suppression works correctly.
 """
 
 import asyncio
-import json
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add src to path
 sys.path.insert(0, "/home/ubuntu/projects/jarvis-livekit/src")
@@ -28,13 +26,13 @@ async def test_multi_tool_suppression():
     is_first = filler.record_tool_start("session_search")
     print(f"Tool 1 started: session_search, is_first={is_first}")
     print(f"  has_active_tools={filler.has_active_tools}")
-    assert filler.has_active_tools == True
+    assert filler.has_active_tools
 
     # Simulate second tool start
     is_first = filler.record_tool_start("tool_call")
     print(f"Tool 2 started: tool_call, is_first={is_first}")
     print(f"  has_active_tools={filler.has_active_tools}")
-    assert filler.has_active_tools == True
+    assert filler.has_active_tools
 
     # At this point, both tools are active
     # LLM text should be suppressed
@@ -47,25 +45,27 @@ async def test_multi_tool_suppression():
     print(f"  has_active_tools={filler.has_active_tools}")
     print(f"  t_first_sentence={t_first_sentence}")
     print(f"  should_suppress={should_suppress}")
-    assert should_suppress == True, "LLM text should be suppressed during tool execution"
+    assert should_suppress, "LLM text should be suppressed during tool execution"
 
     # Simulate first tool complete
     filler.record_tool_end()
-    print(f"\nTool 1 completed")
+    print("\nTool 1 completed")
     print(f"  has_active_tools={filler.has_active_tools}")
     # Under idempotent tool lifecycle, tool completion resets active status to allow final response streaming
-    assert filler.has_active_tools == False
+    assert not filler.has_active_tools
 
     # Simulate second tool complete (no-op)
     filler.record_tool_end()
-    print(f"\nTool 2 completed")
+    print("\nTool 2 completed")
     print(f"  has_active_tools={filler.has_active_tools}")
-    assert filler.has_active_tools == False  # No more active tools
+    assert not filler.has_active_tools  # No more active tools
 
     # Now LLM text should NOT be suppressed
     should_suppress = filler.has_active_tools and t_first_sentence is not None
     print(f"  should_suppress={should_suppress}")
-    assert should_suppress == False, "LLM text should NOT be suppressed after all tools complete"
+    assert not should_suppress, (
+        "LLM text should NOT be suppressed after all tools complete"
+    )
 
     print("\n✅ Multi-tool suppression test PASSED")
 
@@ -77,10 +77,16 @@ async def test_sentence_splitting():
     test_cases = [
         # (input, expected_first_sentence)
         ("Hello world. How are you?", "Hello world."),
-        ("The version is 3.7 Flash.", "The version is 3.7 Flash."),  # Complete sentence with period
+        (
+            "The version is 3.7 Flash.",
+            "The version is 3.7 Flash.",
+        ),  # Complete sentence with period
         ("The version is 3.7 Flash. It works.", "The version is 3.7 Flash."),
         ("Price is 1.500. That's cheap.", "Price is 1.500."),
-        ("As of today, 14 August 2026, it works.", "As of today, 14 August 2026, it works."),
+        (
+            "As of today, 14 August 2026, it works.",
+            "As of today, 14 August 2026, it works.",
+        ),
     ]
 
     for input_text, expected in test_cases:
@@ -100,7 +106,7 @@ async def test_filler_rotation():
     """Test that filler pools have enough variety."""
     print("\n=== Testing Filler Variety ===\n")
 
-    from hermes_llm import _OPENING_FILLERS, _DWELL_FILLERS
+    from hermes_llm import _DWELL_FILLERS, _OPENING_FILLERS
 
     print(f"Opening fillers: {len(_OPENING_FILLERS)} variations")
     for i, f in enumerate(_OPENING_FILLERS, 1):
