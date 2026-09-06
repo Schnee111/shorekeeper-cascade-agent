@@ -76,38 +76,36 @@ VOICE_INSTRUCTIONS = """\
 # ---------------------------------------------------------------------------
 
 # Filler pools — rotated randomly so repeated calls don't sound canned.
-# Opening fillers: spoken when a slow tool starts (> 0.3s).
-# Written to sound natural and conversational, not robotic.
-# Includes disfluency (hmm, uh, well) for human-like quality.
+# Soft Disfluency fillers: Spoken only when TTFT or tool latency crosses natural silence boundaries.
+# Short, authentic conversational disfluencies (ACM CUI / HCI conversational research)
+# to hold the floor without blurted formal boilerplate.
 _OPENING_FILLERS = [
-    "[soft] Let me check that for you.",
-    "[warm] Give me just a moment.",
-    "[gentle] One sec, looking into it.",
-    "[soft] Hmm, let me see...",
-    "[warm] Ah, checking now...",
-    "[gentle] Just a moment, please.",
-    "[soft] Well, let me take a look.",
-    "[warm] Okay, one second...",
+    "[soft] Hmm, sebentar ya...",
+    "[gentle] Bentar, Schnee...",
+    "[soft] Coba kulihat dulu...",
+    "[calm] Hmm...",
+    "[soft] Hmm, let's see...",
+    "[gentle] Just a second...",
+    "[calm] Give me a moment...",
+    "[soft] Let me look into that...",
 ]
 
-# Dwell fillers: spoken when total silence exceeds 4s during multi-tool.
-# These acknowledge the wait without repeating the opening filler.
-# More casual and varied to sound like genuine thinking.
+# Dwell fillers: spoken when total silence exceeds 4.5s during heavy multi-tool sequences.
+# These acknowledge the wait without repeating the opening disfluency.
 _DWELL_FILLERS = [
+    "[gentle] Masih kuperiksa ya...",
+    "[soft] Sedikit lagi...",
+    "[calm] Masih berjalan prosesnya...",
     "[soft] Hmm, still looking...",
     "[warm] Almost there...",
-    "[gentle] Just a bit longer...",
-    "[soft] One more moment...",
-    "[warm] Still working on it...",
-    "[soft] Bear with me...",
-    "[gentle] Taking a little longer than expected...",
-    "[warm] Hmm, this is quite thorough...",
+    "[gentle] Still pulling the details...",
+    "[soft] Bear with me just a moment...",
 ]
 
-# Timing thresholds
-_TOOL_FAST_THRESHOLD = 0.3  # seconds — tools faster than this get NO filler
-_DWELL_THRESHOLD = 4.0  # seconds of silence before dwell filler kicks in
-_EARLY_ACK_THRESHOLD = 2.0  # seconds — if LLM hasn't emitted first token/sentence in 2s, speak an ack filler
+# Timing thresholds (grounded in HCI conversational turn-taking literature)
+_TOOL_FAST_THRESHOLD = 0.8  # seconds — snappy tools (<0.8s) get NO filler, straight to answer
+_DWELL_THRESHOLD = 4.5  # seconds of silence before dwell filler kicks in
+_EARLY_ACK_THRESHOLD = 2.8  # seconds — respects natural human cognitive pause (1.5-2.5s) before soft disfluency
 
 
 class _FillerEngine:
