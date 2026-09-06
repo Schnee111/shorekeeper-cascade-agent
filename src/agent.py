@@ -161,7 +161,9 @@ async def my_agent(ctx: JobContext):
             language="id",
             prompt="Percakapan santai sehari-hari dalam Bahasa Indonesia dengan asisten suara Shorekeeper JARVIS. Halo, jam berapa sekarang, cek project, cuaca, sistem.",
         )
-        logger.info("Using Groq Whisper STT (whisper-large-v3, language='id', prompt-biased)")
+        logger.info(
+            "Using Groq Whisper STT (whisper-large-v3, language='id', prompt-biased)"
+        )
     else:
         stt_instance = deepgram.STT(
             model="nova-3",

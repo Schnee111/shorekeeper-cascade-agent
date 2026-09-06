@@ -101,8 +101,12 @@ _DWELL_FILLERS = [
 ]
 
 # Timing thresholds (grounded in HCI conversational turn-taking literature)
-_TOOL_FAST_THRESHOLD = 0.8  # seconds — snappy tools (<0.8s) get NO filler, straight to answer
-_DWELL_THRESHOLD = 4.0  # seconds of continuous tool silence before a dwell filler kicks in
+_TOOL_FAST_THRESHOLD = (
+    0.8  # seconds — snappy tools (<0.8s) get NO filler, straight to answer
+)
+_DWELL_THRESHOLD = (
+    4.0  # seconds of continuous tool silence before a dwell filler kicks in
+)
 _EARLY_ACK_THRESHOLD = 2.8  # seconds — respects natural human cognitive pause (1.5-2.5s) before soft disfluency
 
 
@@ -236,14 +240,16 @@ class _FillerEngine:
                 await asyncio.sleep(_DWELL_THRESHOLD)
                 if self._tool_active and (
                     self._t_last_spoken is not None
-                    and self._loop.time() - self._t_last_spoken >= _DWELL_THRESHOLD - 0.5
+                    and self._loop.time() - self._t_last_spoken
+                    >= _DWELL_THRESHOLD - 0.5
                 ):
                     filler = _DWELL_FILLERS[
                         hash(str(self._t_turn_start) + str(self._loop.time()) + "dwell")
                         % len(_DWELL_FILLERS)
                     ]
                     logger.info(
-                        "Filler engine: dwell filler after %.1fs silence", _DWELL_THRESHOLD
+                        "Filler engine: dwell filler after %.1fs silence",
+                        _DWELL_THRESHOLD,
                     )
                     await send_filler(filler)
                     self._dwell_filler_sent = True
@@ -265,14 +271,16 @@ class _FillerEngine:
                 # If a tool is still running and we have been silent long enough
                 if self._tool_active and (
                     self._t_last_spoken is not None
-                    and self._loop.time() - self._t_last_spoken >= _DWELL_THRESHOLD - 0.5
+                    and self._loop.time() - self._t_last_spoken
+                    >= _DWELL_THRESHOLD - 0.5
                 ):
                     filler = _DWELL_FILLERS[
                         hash(str(self._t_turn_start) + str(self._loop.time()) + "dwell")
                         % len(_DWELL_FILLERS)
                     ]
                     logger.info(
-                        "Filler engine: dwell filler after %.1fs silence", _DWELL_THRESHOLD
+                        "Filler engine: dwell filler after %.1fs silence",
+                        _DWELL_THRESHOLD,
                     )
                     await send_filler(filler)
                     self._dwell_filler_sent = True
@@ -466,7 +474,9 @@ def _split_sentence(buffer: str) -> tuple[str | None, str]:
                 # File extension guard: don't split on file extensions like .py, .ts, .js, .json, .md
                 # e.g. "agent.py", "conversation.svelte.ts"
                 after = buffer[i + 1 : i + 10]
-                if re.match(r"^[a-zA-Z0-9_-]+\b", after) and not re.match(r"^\s", next_char):
+                if re.match(r"^[a-zA-Z0-9_-]+\b", after) and not re.match(
+                    r"^\s", next_char
+                ):
                     continue
             return buffer[: i + 1], buffer[i + 1 :]
     if len(buffer) > _MAX_PENDING_LEN:

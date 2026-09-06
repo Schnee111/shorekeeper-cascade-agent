@@ -53,7 +53,12 @@ async def voices_list(request):
         {"id": "marin", "label": "Marin", "desc": "EN · Female", "default": False},
         {"id": "reze", "label": "Reze", "desc": "EN · Female", "default": False},
         {"id": "makima", "label": "Makima", "desc": "EN · Female", "default": False},
-        {"id": "arlecchino", "label": "Arlecchino", "desc": "EN · Female", "default": False},
+        {
+            "id": "arlecchino",
+            "label": "Arlecchino",
+            "desc": "EN · Female",
+            "default": False,
+        },
         {"id": "yoimiya", "label": "Yoimiya", "desc": "EN · Female", "default": False},
         {"id": "jp1", "label": "JP Voice 1", "desc": "JP · Female", "default": False},
         {"id": "jp2", "label": "JP Voice 2", "desc": "JP · Female", "default": False},
@@ -125,4 +130,3 @@ app.router.add_options(
 
 if __name__ == "__main__":
     web.run_app(app, port=8082, host="127.0.0.1")
-
