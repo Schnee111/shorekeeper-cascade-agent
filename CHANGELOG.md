@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.4](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.3...shorekeeper-cascade-agent-v1.7.4) (2026-09-06)
+
+
+### Bug Fixes
+
+* **deps:** sync uv.lock version to 1.7.3 matching pyproject.toml ([ba9a95a](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/ba9a95abacfa6d6613295d599ddc9df9e0ab3d68))
+
 ## [1.7.3](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.2...shorekeeper-cascade-agent-v1.7.3) (2026-09-06)
 
 
