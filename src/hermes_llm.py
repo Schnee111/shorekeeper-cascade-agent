@@ -323,6 +323,57 @@ _EMOJI_RE = re.compile(
 _ZERO_WIDTH_RE = re.compile("[\u200b-\u200f\u2060\ufeff\u00ad]")
 _CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f]")
 _REPEAT_PUNCT_RE = re.compile(r"([!?])\1+")
+_BULLET_LINE_RE = re.compile(r"^\s{0,3}(?:[-*+\u2022]|\d{1,3}[.)])\s+", re.MULTILINE)
+_STANDALONE_DASH_RE = re.compile(r"(?:(?<=^)|(?<=\s))[-\u2013\u2014]+(?=\s|$)")
+
+# Common function words for lightweight voice language detection (English vs Indonesian)
+_ID_COMMON_WORDS = frozenset({
+    "yang", "di", "dan", "ini", "untuk", "pada", "adalah", "dengan", "itu",
+    "atau", "dari", "ke", "akan", "bisa", "ada", "tidak", "saat", "sudah",
+    "oleh", "juga", "dalam", "kami", "kita", "saya", "kamu", "anda", "mereka",
+    "dia", "semua", "banyak", "satu", "dua", "tiga", "sistem", "berjalan",
+    "tahun", "rujukan", "pengujian", "versi", "rilis", "telah", "aktif",
+    "sekarang", "hari", "bulan", "waktu", "baik", "tolong", "terima", "kasih",
+    "apakah", "bagaimana", "kenapa", "karena", "jika", "kalau", "bukan", "bila",
+    "hanya", "lagi", "belum", "dapat", "harus", "tentu", "opsi", "bagian",
+    "mohon", "silakan", "kemarin", "besok", "minggu", "jam", "menit", "detik",
+})
+
+_EN_COMMON_WORDS = frozenset({
+    "the", "be", "to", "of", "and", "a", "in", "that", "have", "i", "it", "for",
+    "not", "on", "with", "he", "as", "you", "do", "at", "this", "but", "his",
+    "by", "from", "they", "we", "say", "her", "she", "or", "an", "will", "my",
+    "one", "all", "would", "there", "their", "what", "so", "up", "out", "if",
+    "about", "who", "get", "which", "go", "me", "when", "make", "can", "like",
+    "time", "no", "just", "him", "know", "take", "people", "into", "year", "your",
+    "good", "some", "could", "them", "see", "other", "than", "then", "now", "look",
+    "only", "come", "its", "over", "think", "also", "back", "after", "use", "two",
+    "how", "our", "work", "first", "well", "way", "even", "new", "want", "because",
+    "any", "these", "give", "day", "most", "us", "week", "weeks", "month", "months",
+    "hour", "hours", "minute", "minutes", "second", "seconds", "file", "files",
+    "system", "run", "running", "check", "checking", "done", "here", "found",
+    "is", "are", "was", "were", "has", "had", "been", "let", "please",
+    "error", "errors", "warning", "warnings", "test", "tests", "option", "options",
+    "item", "items", "step", "steps", "remaining", "version", "deployed",
+})
+
+
+def detect_voice_language(text: str, default: str = "en") -> str:
+    """Detect if text is predominantly Indonesian ('id') or English ('en').
+
+    Defaults to English ('en') since Shorekeeper JARVIS voice assistant speaks
+    in English by default unless Indonesian is explicitly spoken.
+    """
+    tokens = re.findall(r"[a-zA-Z]+", text.lower())
+    if not tokens:
+        return default
+    id_matches = sum(1 for t in tokens if t in _ID_COMMON_WORDS)
+    en_matches = sum(1 for t in tokens if t in _EN_COMMON_WORDS)
+    if id_matches > en_matches:
+        return "id"
+    if en_matches > id_matches:
+        return "en"
+    return default
 
 # Hermes gateway steering scaffolds — internal machinery the core writes into
 # its own history when a live turn gets redirected/interrupted mid-flight
@@ -356,11 +407,12 @@ def contains_scaffold(text: str) -> bool:
     return any(marker in low for marker in _SCAFFOLD_MARKERS)
 
 
-def clean_voice_text(text: str) -> str:
+def clean_voice_text(text: str, *, lang: str | None = None) -> str:
     """Strip markdown/emoji/URLs/control chars from one chunk of voice text.
 
     Server-side mirror of the client's cleanVoiceText() (voice-text.ts).
-    Preserves line breaks; collapses other whitespace.
+    Preserves line breaks; collapses other whitespace. Normalizes numbers
+    to spoken words in English ('en') or Indonesian ('id') for Fish Audio TTS.
     """
     if not text:
         return ""
@@ -409,9 +461,14 @@ def clean_voice_text(text: str) -> str:
     # 5. Line-level markdown: hr, headings, bullets, quotes, table pipes.
     s = _HR_RE.sub("", s)
     s = _HEADING_RE.sub("", s)
-    # Do NOT strip bullet markers from line start — let them flow so client renders real markdown lists!
+    # Strip bullet markers from line start (*, +, -, •, or 1.) so Fish Audio TTS
+    # never vocalizes '-' as 'minus'.
+    s = _BULLET_LINE_RE.sub("", s)
     s = _QUOTE_RE.sub("", s)
     s = _TABLE_PIPE_RE.sub(" ", s)
+
+    # 5b. Strip standalone / dangling hyphens/dashes so they are never vocalized as 'minus'.
+    s = _STANDALONE_DASH_RE.sub(" ", s)
 
     # 6. Emphasis leftovers.
     s = _EMPHASIS_RE.sub("", s)
@@ -424,19 +481,23 @@ def clean_voice_text(text: str) -> str:
     # 8. Normalize repeated punctuation.
     s = _REPEAT_PUNCT_RE.sub(r"\1", s)
 
-    # 8b. Normalize numbers/digits to spoken words (Indonesian/English) for Fish Audio TTS
+    # 8b. Normalize numbers/digits to spoken words (English/Indonesian) for Fish Audio TTS
     try:
         from num2words import num2words
+
+        target_lang = lang if lang is not None else detect_voice_language(s)
 
         def _replace_num(match: re.Match) -> str:
             val_str = match.group(0)
             try:
                 if "." in val_str:
                     num = float(val_str)
-                    return num2words(num, lang="id").replace("point", "koma")
+                    if target_lang == "id":
+                        return num2words(num, lang="id").replace("point", "koma")
+                    return num2words(num, lang="en")
                 else:
                     num = int(val_str)
-                    return num2words(num, lang="id")
+                    return num2words(num, lang=target_lang)
             except Exception:
                 return val_str
 
@@ -452,6 +513,10 @@ def clean_voice_text(text: str) -> str:
     s = s.replace("\n", " ")
     s = re.sub(r"[ \t]{2,}", " ", s).strip()
     return s
+
+
+# Alias for clean_voice_text to support alternative naming conventions
+clean_text_for_tts = clean_voice_text
 
 
 def _split_sentence(buffer: str) -> tuple[str | None, str]:
