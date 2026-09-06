@@ -30,7 +30,7 @@ services:
     image: ${AGENT_IMAGE:-ghcr.io/schnee111/shorekeeper-cascade-agent:latest}
     container_name: shorekeeper-cascade-token-server
     restart: unless-stopped
-    command: ["uv", "run", "python", "token_server.py"]
+    entrypoint: ["/app/.venv/bin/python3", "token_server.py"]
     env_file:
       - .env.local
     environment:
