@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.3](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.2...shorekeeper-cascade-agent-v1.7.3) (2026-09-06)
+
+
+### Documentation
+
+* add comprehensive technology stack breakdown matrix to README ([78513e5](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/78513e5ad74e3392b6391b43a07090f725506018))
+
 ## [1.7.2](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.1...shorekeeper-cascade-agent-v1.7.2) (2026-09-06)
 
 
