@@ -176,12 +176,12 @@ async def my_agent(ctx: JobContext):
     # Set up a voice AI pipeline using Groq Whisper / Deepgram, Fish Audio, and the LiveKit turn detector
     session = AgentSession(
         stt=stt_instance,
-        # Text-to-speech (TTS): Configured with explicit 48kHz sample rate to match WebRTC Opus
-        # native format and prevent non-integer resampling jitter/crackle (Issue #4).
+        # Text-to-speech (TTS): Fish Audio S2.1-pro-free.
+        # Note: LiveKit Inference Cloud Fish Audio supports 8000/16000/22050/24000/44100 Hz.
+        # Do NOT set sample_rate=48000 (rejected with INVALID_DATA). Default 44100 is automatically resampled by LiveKit WebRTC engine.
         tts=inference.TTS(
             model="fishaudio/s2.1-pro-free",
             voice=voice_id,
-            sample_rate=48000,
         ),
         # SYNCHRONIZE TRANSCRIPTION TO TTS AUDIO PLAYBACK (LiveKit native)
         use_tts_aligned_transcript=True,
