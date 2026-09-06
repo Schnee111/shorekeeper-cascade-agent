@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.9](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.8...shorekeeper-cascade-agent-v1.7.9) (2026-09-06)
+
+
+### Bug Fixes
+
+* **tts:** remove unsupported 48000Hz sample rate from Fish Audio TTS ([ffb47d6](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/ffb47d653b5ddeb401673bfa95e68e271afc3705)), closes [#32](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/32)
+
 ## [1.7.8](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.7...shorekeeper-cascade-agent-v1.7.8) (2026-09-06)
 
 
