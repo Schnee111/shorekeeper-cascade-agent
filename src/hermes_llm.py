@@ -156,7 +156,8 @@ class _FillerEngine:
     def record_tool_start(self, tool_name: str) -> bool:
         """Record a tool starting. Returns True if this is the FIRST tool."""
         self._tool_count += 1
-        self._active_tool_count += 1
+        # Set active tool state (idempotent for nested/duplicate tool.generating events)
+        self._active_tool_count = 1
         self._tool_active = True
         self._last_tool_name = tool_name
         if self._t_first_tool_start is None:
@@ -166,9 +167,14 @@ class _FillerEngine:
 
     def record_tool_end(self) -> None:
         """Record a tool completing."""
-        self._active_tool_count = max(0, self._active_tool_count - 1)
-        if self._active_tool_count == 0:
-            self._tool_active = False
+        # When a tool completes, clear active status
+        self._active_tool_count = 0
+        self._tool_active = False
+
+    def clear_all_tools(self) -> None:
+        """Reset tool active state completely."""
+        self._active_tool_count = 0
+        self._tool_active = False
 
     @property
     def has_active_tools(self) -> bool:
@@ -1101,6 +1107,8 @@ class HermesLLMStream(LLMStream):
                             event_type,
                         )
                         continue
+                    # Clear any lingering tool active state to guarantee no suppression leakage
+                    filler.clear_all_tools()
                     logger.info(
                         "Hermes turn complete (event=%s, ack=%s, total=%.2fs)",
                         event_type,
