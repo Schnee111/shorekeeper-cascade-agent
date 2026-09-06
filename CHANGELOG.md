@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.8](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.7...shorekeeper-cascade-agent-v1.7.8) (2026-09-06)
+
+
+### Documentation
+
+* replace fixed ascii with responsive mermaid architecture diagram ([bbe7b7c](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/bbe7b7c224eda760aa283c4e5fcb6f63a8718e24))
+
 ## [1.7.7](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.6...shorekeeper-cascade-agent-v1.7.7) (2026-09-06)
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shorekeeper-cascade-agent"
-version = "1.7.7"
+version = "1.7.8"
 description = "Modular cascade voice AI agent (Groq Whisper STT + Hermes LLM + Fish Audio TTS via LiveKit)"
 requires-python = ">=3.10, <3.15"
 
