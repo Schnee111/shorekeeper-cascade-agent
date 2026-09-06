@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-starter-python"
+name = "shorekeeper-cascade-agent"
 version = "1.0.0"
-description = "Simple voice AI assistant built with LiveKit Agents for Python"
+description = "Modular cascade voice AI agent (Groq Whisper STT + Hermes LLM + Fish Audio TTS via LiveKit)"
 requires-python = ">=3.10, <3.15"
 
 dependencies = [
