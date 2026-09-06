@@ -1,4 +1,4 @@
-name: Release Please
+name: Release Please & Lockfile Sync
 
 on:
   push:
@@ -17,8 +17,51 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      prs_created: ${{ steps.release.outputs.prs_created }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  sync-release-lockfile:
+    name: Downstream Auto-Sync uv.lock for Release PR
+    needs: release-please
+    if: ${{ fromJSON(needs.release-please.outputs.prs_created || 'false') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse Release PR Head Branch
+        id: pr-meta
+        run: |
+          HEAD_BRANCH=$(echo '${{ needs.release-please.outputs.pr }}' | jq -r '.headBranchName')
+          echo "head_branch=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Release PR Branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr-meta.outputs.head_branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Sync uv.lock
+        run: |
+          uv lock
+          if [ -n "$(git status --porcelain uv.lock)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add uv.lock
+            git commit -m "chore(deps): auto-sync uv.lock for release version [skip ci]"
+            git push origin HEAD:${{ steps.pr-meta.outputs.head_branch }}
+          fi
