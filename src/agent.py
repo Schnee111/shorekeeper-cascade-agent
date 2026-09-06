@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 import textwrap
 
@@ -16,7 +17,7 @@ from livekit.agents import (
     inference,
     room_io,
 )
-from livekit.plugins import ai_coustics, deepgram
+from livekit.plugins import ai_coustics, deepgram, groq
 
 from hermes_llm import HermesLLM
 
@@ -90,6 +91,8 @@ server = AgentServer(
     # the forkserver master holds them. "spawn" makes each job process fully
     # independent — dies clean, zero orphans, zero lingering RAM.
     multiprocessing_context="spawn",
+    # Bind localhost only — akses publik hanya via domain/Nginx.
+    host=os.getenv("LIVEKIT_AGENT_HTTP_HOST", "127.0.0.1"),
 )
 
 
@@ -149,16 +152,27 @@ async def my_agent(ctx: JobContext):
     except Exception:
         logger.exception("Failed to read participant voice; using fallback")
 
-    # Set up a voice AI pipeline using AssemblyAI, Fish Audio, and the LiveKit turn detector
-    session = AgentSession(
-        # Speech-to-text (STT): Deepgram nova-3 realtime word-by-word streaming
-        # interim_results=True + endpointing_ms=25 (default low-latency chunking)
-        stt=deepgram.STT(
+    # Speech-to-text (STT): Groq Whisper (whisper-large-v3-turbo)
+    # High-accuracy multilingual/Indonesian transcription with ultra-low latency LPU inference
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if groq_api_key:
+        stt_instance = groq.STT(
+            model="whisper-large-v3-turbo",
+            language="id",
+        )
+        logger.info("Using Groq Whisper STT (whisper-large-v3-turbo, language='id')")
+    else:
+        stt_instance = deepgram.STT(
             model="nova-3",
             language="id",
             interim_results=True,
             smart_format=True,
-        ),
+        )
+        logger.info("Using Deepgram Nova-3 fallback STT")
+
+    # Set up a voice AI pipeline using Groq Whisper / Deepgram, Fish Audio, and the LiveKit turn detector
+    session = AgentSession(
+        stt=stt_instance,
         # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
         # See all available models at https://docs.livekit.io/agents/models/tts/
         tts=inference.TTS(model="fishaudio/s2.1-pro-free", voice=voice_id),
@@ -242,7 +256,6 @@ async def my_agent(ctx: JobContext):
     # tree — NOT the whole worker group — by walking /proc for children of
     # the current PID after a brief drain window.
     import contextlib
-    import os
     import signal
 
     def _kill_own_tree() -> None:
