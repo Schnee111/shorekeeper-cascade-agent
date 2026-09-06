@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.6](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.5...shorekeeper-cascade-agent-v1.7.6) (2026-09-06)
+
+
+### Bug Fixes
+
+* **deploy:** override entrypoint in compose for cascade token server ([d2de143](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/d2de143fb8fca751577d0b84ad43aa8ac5ec6afc))
+* **deps:** sync uv.lock to version 1.7.5 to unblock container build ([222acd8](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/222acd8efc66287366353dcdcdc3ef1b368cb8bf))
+
 ## [1.7.5](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.4...shorekeeper-cascade-agent-v1.7.5) (2026-09-06)
 
 
