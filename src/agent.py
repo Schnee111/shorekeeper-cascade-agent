@@ -152,15 +152,16 @@ async def my_agent(ctx: JobContext):
     except Exception:
         logger.exception("Failed to read participant voice; using fallback")
 
-    # Speech-to-text (STT): Groq Whisper (whisper-large-v3-turbo)
+    # Speech-to-text (STT): Groq Whisper (whisper-large-v3) with context prompt biasing
     # High-accuracy multilingual/Indonesian transcription with ultra-low latency LPU inference
     groq_api_key = os.getenv("GROQ_API_KEY")
     if groq_api_key:
         stt_instance = groq.STT(
-            model="whisper-large-v3-turbo",
+            model="whisper-large-v3",
             language="id",
+            prompt="Percakapan santai sehari-hari dalam Bahasa Indonesia dengan asisten suara Shorekeeper JARVIS. Halo, jam berapa sekarang, cek project, cuaca, sistem.",
         )
-        logger.info("Using Groq Whisper STT (whisper-large-v3-turbo, language='id')")
+        logger.info("Using Groq Whisper STT (whisper-large-v3, language='id', prompt-biased)")
     else:
         stt_instance = deepgram.STT(
             model="nova-3",
@@ -173,27 +174,31 @@ async def my_agent(ctx: JobContext):
     # Set up a voice AI pipeline using Groq Whisper / Deepgram, Fish Audio, and the LiveKit turn detector
     session = AgentSession(
         stt=stt_instance,
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models at https://docs.livekit.io/agents/models/tts/
-        tts=inference.TTS(model="fishaudio/s2.1-pro-free", voice=voice_id),
+        # Text-to-speech (TTS): Configured with explicit 48kHz sample rate to match WebRTC Opus
+        # native format and prevent non-integer resampling jitter/crackle (Issue #4).
+        tts=inference.TTS(
+            model="fishaudio/s2.1-pro-free",
+            voice=voice_id,
+            sample_rate=48000,
+        ),
         # SYNCHRONIZE TRANSCRIPTION TO TTS AUDIO PLAYBACK (LiveKit native)
         use_tts_aligned_transcript=True,
         # VAD & Endpointing: Standard Production Tuned
-        # min_silence_duration: 0.4s (VAD silence threshold)
-        # endpointing min_delay: 0.5s (snappy cut-off on finished speech)
-        vad=inference.VAD(model="silero", min_silence_duration=0.4),
+        # min_silence_duration: 0.6s (avoids cutting off trailing syllables in fast speech)
+        # endpointing min_delay: 0.6s (snappy yet natural turn boundaries)
+        vad=inference.VAD(model="silero", min_silence_duration=0.6),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(version="v1"),
             endpointing={
                 "mode": "dynamic",
-                "min_delay": 0.5,
+                "min_delay": 0.6,
                 "max_delay": 2.5,
                 "alpha": 0.7,
             },
             interruption=InterruptionOptions(
                 enabled=True,
                 mode="vad",
-                min_duration=0.3,
+                min_duration=0.35,
                 resume_false_interruption=True,
             ),
             preemptive_generation={"enabled": True},
