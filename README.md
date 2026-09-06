@@ -74,6 +74,20 @@ The Shorekeeper voice intelligence project is architected across three independe
 
 ---
 
+## 🛠️ Technology Stack
+
+| Layer | Technologies & Frameworks | Description |
+|---|---|---|
+| **Speech-to-Text (STT)** | Groq Whisper `large-v3` · Deepgram Nova-3 | Sub-200ms transcription with Indonesian prompt biasing & dual fallback |
+| **Vocal Activity Detection** | Silero VAD v4 · LiveKit Audio Input Filters | Turn detection, interruptibility guards, and noise gate |
+| **Audio Enhancement** | ai-coustics `QUAIL_VF_S` | Neural audio restoration and microphone clarity enhancement |
+| **LLM Reasoning Engine** | Hermes Agent Gateway · Custom Function Tools | Reasoning loop, memory tool dispatching, and dwell loop manager |
+| **Text-to-Speech (TTS)** | Fish Audio S2.1 Pro (`s2.1-pro-free`) | Expressive neural speech synthesis strictly locked at native 48,000 Hz |
+| **Transport & Protocol** | WebRTC · LiveKit Agents SDK 1.6.9 · aiohttp | Duplex low-latency audio carrier & ephemeral JWT issuer (:8082) |
+| **DevOps & Runtime** | Python 3.11 · uv · Docker · GHCR · Systemd | Multi-stage slim containerization (~172MB RSS, 600M hard guard) |
+
+---
+
 ## ⚡ Technical Benchmarks & Feature Comparison
 
 | Benchmark / Metric | Shorekeeper Cascade Agent | Upstream Starter |
