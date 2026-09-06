@@ -1,0 +1,53 @@
+# Shorekeeper Cascade Agent — Production Docker Compose
+# Designed for low-memory VPS deployment with strict resource cgroups
+
+services:
+  cascade-agent:
+    image: ${AGENT_IMAGE:-ghcr.io/schnee111/shorekeeper-cascade-agent:latest}
+    container_name: shorekeeper-cascade-agent
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LIVEKIT_AGENT_PORT=8081
+    network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: '1.50'
+          memory: 600M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cascade-token-server:
+    image: ${AGENT_IMAGE:-ghcr.io/schnee111/shorekeeper-cascade-agent:latest}
+    container_name: shorekeeper-cascade-token-server
+    restart: unless-stopped
+    command: ["uv", "run", "python", "token_server.py"]
+    env_file:
+      - .env.local
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TOKEN_SERVER_HOST=127.0.0.1
+      - TOKEN_SERVER_PORT=8082
+    network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
