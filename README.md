@@ -1,161 +1,119 @@
-<a href="https://livekit.io/">
-  <img src="./.github/assets/livekit-mark.png" alt="LiveKit logo" width="100" height="100">
-</a>
+# Shorekeeper Cascade Agent
 
-# LiveKit Agents Starter - Python
+Production-ready, modular cascade voice AI agent built with **LiveKit Agents for Python**, **Groq Whisper large-v3**, **Hermes LLM**, and **Fish Audio S2.1 Pro TTS**. Optimized for low-latency conversational audio, tool reasoning, and automated containerized deployment.
 
-A complete starter project for building voice AI apps with [LiveKit Agents for Python](https://github.com/livekit/agents) and [LiveKit Cloud](https://cloud.livekit.io/).
+---
 
-The starter project includes:
+## Overview
 
-- A simple voice AI assistant, ready for extension and customization
-- A voice AI pipeline built on [LiveKit Inference](https://docs.livekit.io/agents/models/inference), providing zero-configuration access to [models](https://docs.livekit.io/agents/models) from top labs
-  - Uses the fast, open-weight Gemma 4 31B model, [hosted by LiveKit](https://docs.livekit.io/agents/models/llm/livekit/) and tuned for optimal performance in voice AI, as the default LLM
-  - Uses Fish Audio S2.1 Pro for TTS, which renders the inline delivery markup that expressive mode relies on
-  - Supports more than 50 models from OpenAI, Cartesia, Deepgram, and other providers
-  - Access to a wide range of other models, including [Realtime models](https://docs.livekit.io/agents/models/realtime), through extensive plugin ecosystem
-- Expressive mode, enabled by default: the framework injects the TTS provider's markup guide into the LLM prompt, so the model emits inline delivery tags (emotion, pacing, non-verbal sounds) that the TTS renders and the transcript never shows
-- Eval suite based on the LiveKit Agents [testing & evaluation framework](https://docs.livekit.io/agents/start/testing/)
-- [LiveKit Turn Detector](https://docs.livekit.io/agents/logic/turns/turn-detector/), an end-of-turn model that listens to the user's audio directly, combining semantic understanding with acoustic cues for state-of-the-art accuracy across 14 languages
-- [Background voice cancellation](https://docs.livekit.io/transport/media/noise-cancellation/)
-- Deep session insights from LiveKit [Agent Observability](https://docs.livekit.io/deploy/observability/)
-- A Dockerfile ready for [production deployment to LiveKit Cloud](https://docs.livekit.io/deploy/agents/)
+The `shorekeeper-cascade-agent` serves as the backend intelligence and media processing pipeline for the Shorekeeper voice ecosystem. Unlike monolithic speech-to-speech models, this architecture separates speech perception, tool execution, and vocal synthesis into modular layers, allowing granular prompt biasing, deterministic tool dispatch, and custom vocal timbre rendering.
 
-This starter app is compatible with any [custom web/mobile frontend](https://docs.livekit.io/frontends/) or [telephony](https://docs.livekit.io/telephony/).
+### Key Capabilities
 
-## Using coding agents
+- **Biased Speech-to-Text**: Groq-accelerated `whisper-large-v3` with Indonesian prompt biasing to prevent phonetic hallucination, backed by Deepgram Nova-3 failover.
+- **Smart Turn Detection**: Multilingual acoustic end-of-turn detector with Silero VAD calibrated at `min_silence_duration = 0.6s`.
+- **Hermes LLM Reasoning**: Fast tool orchestration, conversational disfluency early acknowledgments (2.8s threshold), and continuous periodic dwell filler loops (4.0s).
+- **Expressive 48kHz TTS**: Zero-latency speech synthesis via Fish Audio S2.1 Pro (`s2.1-pro-free`), locked at native 48,000 Hz to eliminate WebRTC hardware resampling crackle.
+- **Standalone Token Server**: Built-in HTTP server (`127.0.0.1:8082`) issuing ephemeral JWT room tokens and voice catalog manifests.
 
-This project is designed to work with coding agents like [Claude Code](https://claude.com/product/claude-code), [Cursor](https://www.cursor.com/), and [Codex](https://openai.com/codex/).
+---
 
-For your convenience, LiveKit offers both a CLI and an [MCP server](https://docs.livekit.io/reference/developer-tools/docs-mcp/) that can be used to browse and search its documentation. The [LiveKit CLI](https://docs.livekit.io/intro/basics/cli/) (`lk docs`) works with any coding agent that can run shell commands. Install it for your platform:
+## Architecture Flow
 
-**macOS:**
-
-```console
-brew install livekit-cli
+```text
+  [ WebRTC Audio In ]
+          │
+          ▼
+   [ Silero VAD + Turn Detector ]
+          │
+          ▼
+   [ Groq Whisper large-v3 STT ] ──(Indonesian Prompt Biased)──▶ [ Text Transcript ]
+                                                                       │
+                                                                       ▼
+   [ Fish Audio S2.1 Pro TTS ] ◀──(Natural English Speech)─── [ Hermes LLM Engine ]
+          │ (Locked 48kHz Opus)                                        │
+          ▼                                                            ▼
+  [ WebRTC Audio Out ]                                        [ Tool Execution ]
 ```
 
-**Linux:**
+---
 
-```console
-curl -sSL https://get.livekit.io/cli | bash
-```
+## Getting Started
 
-**Windows:**
+### Prerequisites
 
-```console
-winget install LiveKit.LiveKitCLI
-```
+- **Python**: >= 3.11, < 3.15
+- **uv**: Fast Python package installer (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- **LiveKit Cloud or Self-Hosted LiveKit Server**
 
-The `lk docs` subcommand requires version 2.15.0 or higher. Check your version with `lk --version` and update if needed. Once installed, your coding agent can search and browse LiveKit documentation directly from the terminal:
+### Environment Configuration
 
-```console
-lk docs search "voice agents"
-lk docs get-page /agents/start/voice-ai-quickstart
-```
-
-See the [Using coding agents](https://docs.livekit.io/intro/coding-agents/) guide for more details, including MCP server setup.
-
-The project includes a complete [AGENTS.md](AGENTS.md) file for these assistants. You can modify this file to suit your needs. To learn more about this file, see [https://agents.md](https://agents.md).
-
-## Dev Setup
-
-Create a project from this template with the LiveKit CLI (recommended):
+Create a `.env.local` file with your credentials:
 
 ```bash
-lk cloud auth
-lk agent init my-agent --template agent-starter-python
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=your_api_key
+LIVEKIT_API_SECRET=your_api_secret
+
+# AI Providers
+GROQ_API_KEY=gsk_...
+DEEPGRAM_API_KEY=...
+FISH_API_KEY=sk-fish...
 ```
 
-The CLI clones the template and configures your environment. Then follow the rest of this guide from [Run the agent](#run-the-agent).
+### Local Development
 
-<details>
-<summary>Alternative: Manual setup without the CLI</summary>
+1. Install dependencies:
+   ```bash
+   uv sync --locked
+   ```
 
-Clone the repository and install dependencies to a virtual environment:
+2. Run tests and verify code quality:
+   ```bash
+   uv run ruff check .
+   uv run ruff format --check .
+   uv run pytest -v tests/
+   ```
 
-```console
-cd agent-starter-python
-uv sync
-```
+3. Start the agent in development mode:
+   ```bash
+   uv run python src/agent.py dev
+   ```
 
-Sign up for [LiveKit Cloud](https://cloud.livekit.io/) then set up the environment by copying `.env.example` to `.env.local` and filling in the required keys:
+4. In a separate terminal, start the token server:
+   ```bash
+   uv run python token_server.py
+   ```
 
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
+---
 
-You can load the LiveKit environment automatically using the [LiveKit CLI](https://docs.livekit.io/intro/basics/cli/):
+## Production Deployment (Docker & Containerization)
+
+The repository provides a multi-stage `Dockerfile` based on `python:3.11-slim-bookworm` with layer caching, weighing only **~260 MB**.
+
+### Running via Docker Compose
 
 ```bash
-lk cloud auth
-lk app env --write --destination .env.local
+# Start Agent and Token Server with strict resource limits
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-</details>
+### Resource Limits (VPS-Friendly)
 
-## Run the agent
+- **Agent Container**: `cpus: 1.5`, `mem_limit: 600M`
+- **Token Server**: `cpus: 0.5`, `mem_limit: 128M`
+- **Network Mode**: `host` (bound strictly to `127.0.0.1`)
 
-Run this command to speak to your agent directly in your terminal:
+---
 
-```console
-uv run python src/agent.py console
-```
+## CI/CD & Automated Release
 
-To run the agent for use with a frontend or telephony, use the `dev` command:
+- **Continuous Integration**: On every push and PR, GitHub Actions runs `ruff` linting, code formatting checks, and the `pytest` test suite.
+- **Automated GHCR Deployment**: Pushes to `main` build multi-stage images and push to GitHub Container Registry (`ghcr.io/schnee111/shorekeeper-cascade-agent`) tagged by short commit SHA (`sha-<hash>`) and semantic versions.
+- **Release Automation**: Powered by **Google Release Please** (`.github/workflows/release-please.yml`). Commits following [Conventional Commits](docs/SEMVER_CONVENTIONAL_COMMITS.md) automatically calculate semantic version bumps and maintain `CHANGELOG.md`.
 
-```console
-uv run python src/agent.py dev
-```
-
-In production, use the `start` command:
-
-```console
-uv run python src/agent.py start
-```
-
-## Frontend & Telephony
-
-Get started quickly with our pre-built frontend starter apps, or add telephony support:
-
-| Platform | Link | Description |
-|----------|----------|-------------|
-| **Web** | [`livekit-examples/agent-starter-react`](https://github.com/livekit-examples/agent-starter-react) | Web voice AI assistant with React & Next.js |
-| **iOS/macOS** | [`livekit-examples/agent-starter-swift`](https://github.com/livekit-examples/agent-starter-swift) | Native iOS, macOS, and visionOS voice AI assistant |
-| **Flutter** | [`livekit-examples/agent-starter-flutter`](https://github.com/livekit-examples/agent-starter-flutter) | Cross-platform voice AI assistant app |
-| **React Native** | [`livekit-examples/voice-assistant-react-native`](https://github.com/livekit-examples/voice-assistant-react-native) | Native mobile app with React Native & Expo |
-| **Android** | [`livekit-examples/agent-starter-android`](https://github.com/livekit-examples/agent-starter-android) | Native Android app with Kotlin & Jetpack Compose |
-| **Web Embed** | [`livekit-examples/agent-starter-embed`](https://github.com/livekit-examples/agent-starter-embed) | Voice AI widget for any website |
-| **Telephony** | [Documentation](https://docs.livekit.io/telephony/) | Add inbound or outbound calling to your agent |
-
-For advanced customization, see the [complete frontend guide](https://docs.livekit.io/frontends/).
-
-## Tests and evals
-
-This project includes a complete suite of evals, based on the LiveKit Agents [testing & evaluation framework](https://docs.livekit.io/agents/start/testing/). To run them, use `pytest`.
-
-```console
-uv run pytest
-```
-
-## Using this template repo for your own project
-
-Once you've started your own project based on this repo, you should:
-
-1. **Check in your `uv.lock`**: This file is currently untracked for the template, but you should commit it to your repository for reproducible builds and proper configuration management. (The same applies to `livekit.toml`, if you run your agents in LiveKit Cloud)
-
-2. **Remove the git tracking test**: Delete the "Check files not tracked in git" step from `.github/workflows/tests.yml` since you'll now want this file to be tracked. These are just there for development purposes in the template repo itself.
-
-3. **Add your own repository secrets**: You must [add secrets](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/using-secrets-in-github-actions) for `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` so that the tests can run in CI.
-
-## Deploying to production
-
-This project is production-ready and includes a working `Dockerfile`. To deploy it to LiveKit Cloud or another environment, see the [deploying to production](https://docs.livekit.io/deploy/agents/) guide.
-
-## Self-hosted LiveKit
-
-You can also self-host LiveKit instead of using LiveKit Cloud. See the [self-hosting](https://docs.livekit.io/transport/self-hosting/local/) guide for more information. If you choose to self-host, you'll need to also use [model plugins](https://docs.livekit.io/agents/models/#plugins) instead of LiveKit Inference and will need to remove the [LiveKit Cloud noise cancellation](https://docs.livekit.io/transport/media/noise-cancellation/) plugin.
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the [MIT License](LICENSE).
