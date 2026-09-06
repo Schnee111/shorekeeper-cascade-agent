@@ -21,8 +21,8 @@
 
 ### Timing Configuration
 ```python
-OPENING_GATE = 0.3      # seconds — tool >0.3s triggers opening filler
-DWELL_INTERVAL = 4.0    # seconds — silence >4s triggers dwell filler
+OPENING_GATE = 0.3  # seconds — tool >0.3s triggers opening filler
+DWELL_INTERVAL = 4.0  # seconds — silence >4s triggers dwell filler
 MAX_DWELL_PER_TURN = 2  # max 2 dwell fillers per turn
 ```
 
@@ -47,14 +47,11 @@ MAX_DWELL_PER_TURN = 2  # max 2 dwell fillers per turn
 # Opening filler (instant, pre-synthesized)
 await session.say(
     "Let me check that for you.",
-    allow_interruptions=True  # Allow user to skip
+    allow_interruptions=True,  # Allow user to skip
 )
 
 # Dwell filler (long operations)
-await session.say(
-    "Still working on it...",
-    allow_interruptions=True
-)
+await session.say("Still working on it...", allow_interruptions=True)
 ```
 
 ### Common Pitfalls
