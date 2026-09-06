@@ -43,45 +43,18 @@ The Shorekeeper voice intelligence project is architected across three independe
 
 ## 🏛️ System Architecture
 
-```text
-┌────────────────────────────────────────────────────────────────────────┐
-│               Incoming WebRTC Audio Track (Client Microphone)          │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Opus Audio Frame (16kHz / 48kHz)
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Silero VAD & Turn Gate                          │
-│        (Noise Filtering · Voice Activity Detection · Min Silence 0.6s) │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Validated User Speech Chunk
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Groq Whisper large-v3                           │
-│        (Bilingual Prompt Biasing ID/EN · Deepgram Nova-3 Fallback)     │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ High-Accuracy User Transcript
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                      Hermes LLM Reasoning Core                         │
-│   (Turn-Taking Manager · Activity Timeout Guard · Dwell Filler Audio)  │
-└───────────────┬────────────────────────────────────────▲───────────────┘
-                │ Tool Calls                             │ Execution Result
-                ▼                                        │
-┌────────────────────────────────────────────────────────────────────────┐
-│              LiveKit Function Context & External Tooling               │
-│          (WebSearch · MemPalace Recall · VPS Telemetry Probes)         │
-└────────────────────────────────────────────────────────────────────────┘
-                │ Clean Assistant Text Stream (Markdown/Cues Stripped)
-                ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                      Fish Audio S2.1 Pro Engine                        │
-│          (Locked Native 48,000 Hz · Zero-Jitter Direct Resampling)     │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Outgoing Opus 48kHz Audio Stream
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                 Outgoing WebRTC Track (Client Speakers)                │
-└────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    InTrack["Incoming WebRTC Track<br/>(Client Microphone)"] -->|"16kHz / 48kHz Audio"| VAD["Silero VAD & Turn Gate<br/>(Min Silence 0.6s)"]
+    VAD -->|"Speech Audio Frame"| STT["Groq Whisper large-v3<br/>(Bilingual Biasing ID/EN)"]
+    STT -->|"User Transcript"| LLM["Hermes LLM Reasoning Core<br/>(Turn-Taking & Dwell Audio)"]
+
+    subgraph Tooling ["Function Context & Memory"]
+        LLM <-->|"Tool Call & Return"| Tools["WebSearch · MemPalace Recall · VPS Probes"]
+    end
+
+    LLM -->|"Clean Text Stream"| TTS["Fish Audio S2.1 Pro Engine<br/>(Native 48kHz Direct Resampling)"]
+    TTS -->|"Opus 48kHz Audio"| OutTrack["Outgoing WebRTC Track<br/>(Client Playback)"]
 ```
 
 ---
