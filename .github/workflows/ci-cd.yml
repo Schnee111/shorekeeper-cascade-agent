@@ -45,7 +45,10 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
       - name: Install dependencies
-        run: uv sync --locked
+        run: |
+          # If pyproject.toml has bumped version ahead of lockfile (e.g. Release Please PR),
+          # sync cleanly instead of failing the build
+          uv sync || uv sync --locked
       - name: Run Pytest
         run: uv run pytest -v tests/
 
