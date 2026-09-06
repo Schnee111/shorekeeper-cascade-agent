@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.7](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.6...shorekeeper-cascade-agent-v1.7.7) (2026-09-06)
+
+
+### Documentation
+
+* expand and upgrade system architecture diagram in README ([bcd37c6](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/bcd37c6c0e59ec0c20639e8bf30b2b906b42b749))
+
 ## [1.7.6](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.5...shorekeeper-cascade-agent-v1.7.6) (2026-09-06)
 
 
