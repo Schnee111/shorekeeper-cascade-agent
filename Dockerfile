@@ -63,4 +63,4 @@ EXPOSE 8081 8082
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -f http://127.0.0.1:8081/ || exit 1
 
-CMD ["uv", "run", "src/agent.py", "start"]
+ENTRYPOINT ["/app/.venv/bin/python3", "src/agent.py", "start"]
