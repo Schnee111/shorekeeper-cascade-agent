@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.2](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.1...shorekeeper-cascade-agent-v1.7.2) (2026-09-06)
+
+
+### Documentation
+
+* add unified Shorekeeper Ecosystem cross-reference table to README ([779fb6d](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/779fb6dbcbb0c96200525076f7a662fae6391ed9))
+
 ## [1.7.1](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.0...shorekeeper-cascade-agent-v1.7.1) (2026-09-06)
 
 
