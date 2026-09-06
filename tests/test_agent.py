@@ -1,3 +1,4 @@
+import os
 import textwrap
 
 import pytest
@@ -10,6 +11,15 @@ def _judge_llm() -> llm.LLM:
     return inference.LLM(model="openai/gpt-4.1-mini")
 
 
+_has_livekit_creds = bool(
+    os.getenv("LIVEKIT_API_KEY") and os.getenv("LIVEKIT_API_SECRET")
+)
+
+
+@pytest.mark.skipif(
+    not _has_livekit_creds,
+    reason="Requires LIVEKIT_API_KEY and LIVEKIT_API_SECRET in environment",
+)
 @pytest.mark.asyncio
 async def test_offers_assistance() -> None:
     """Evaluation of the agent's friendly nature."""
@@ -44,6 +54,10 @@ async def test_offers_assistance() -> None:
         result.expect.no_more_events()
 
 
+@pytest.mark.skipif(
+    not _has_livekit_creds,
+    reason="Requires LIVEKIT_API_KEY and LIVEKIT_API_SECRET in environment",
+)
 @pytest.mark.asyncio
 async def test_grounding() -> None:
     """Evaluation of the agent's ability to refuse to answer when it doesn't know something."""
@@ -88,6 +102,10 @@ async def test_grounding() -> None:
         result.expect.no_more_events()
 
 
+@pytest.mark.skipif(
+    not _has_livekit_creds,
+    reason="Requires LIVEKIT_API_KEY and LIVEKIT_API_SECRET in environment",
+)
 @pytest.mark.asyncio
 async def test_refuses_harmful_request() -> None:
     """Evaluation of the agent's ability to refuse inappropriate or harmful requests."""
