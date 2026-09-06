@@ -77,29 +77,27 @@ VOICE_INSTRUCTIONS = """\
 
 # Filler pools — rotated randomly so repeated calls don't sound canned.
 # Soft Disfluency fillers: Spoken only when TTFT or tool latency crosses natural silence boundaries.
-# Short, authentic conversational disfluencies (ACM CUI / HCI conversational research)
-# to hold the floor without blurted formal boilerplate.
+# Strictly natural English conversational disfluencies (optimized for Fish Audio phonetics).
 _OPENING_FILLERS = [
-    "[soft] Hmm, sebentar ya...",
-    "[gentle] Bentar, Schnee...",
-    "[soft] Coba kulihat dulu...",
-    "[calm] Hmm...",
     "[soft] Hmm, let's see...",
     "[gentle] Just a second...",
     "[calm] Give me a moment...",
     "[soft] Let me look into that...",
+    "[calm] Hmm...",
+    "[warm] One moment, Schnee...",
+    "[soft] Checking that now...",
+    "[gentle] Just a quick sec...",
 ]
 
 # Dwell fillers: spoken when total silence exceeds 4.5s during heavy multi-tool sequences.
-# These acknowledge the wait without repeating the opening disfluency.
+# Natural English hold-the-floor cues without repeating the opening filler.
 _DWELL_FILLERS = [
-    "[gentle] Masih kuperiksa ya...",
-    "[soft] Sedikit lagi...",
-    "[calm] Masih berjalan prosesnya...",
     "[soft] Hmm, still looking...",
     "[warm] Almost there...",
     "[gentle] Still pulling the details...",
     "[soft] Bear with me just a moment...",
+    "[calm] Still processing, one sec...",
+    "[gentle] Taking a little longer, almost done...",
 ]
 
 # Timing thresholds (grounded in HCI conversational turn-taking literature)
