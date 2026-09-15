@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.11](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.10...shorekeeper-cascade-agent-v1.7.11) (2026-09-15)
+
+
+### Bug Fixes
+
+* **agent:** decouple transcript from TTS transforms ([#39](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/39), [#40](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/40)) and schedule dwell on slow tool ([#35](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/35)) ([3f637e4](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/3f637e4c283fc489c8641a1c7ddf2d904e5f59c0))
+* **agent:** decouple transcript from TTS transforms ([#39](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/39), [#40](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/40)) and schedule dwell on slow tool ([#35](https://github.com/Schnee111/shorekeeper-cascade-agent/issues/35)) ([c2d2d40](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/c2d2d4015961e919e720cad8dd4120d249412257))
+
 ## [1.7.10](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.9...shorekeeper-cascade-agent-v1.7.10) (2026-09-06)
 
 
