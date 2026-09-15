@@ -19,7 +19,7 @@ from livekit.agents import (
 )
 from livekit.plugins import ai_coustics, deepgram, groq
 
-from hermes_llm import HermesLLM
+from hermes_llm import HermesLLM, tts_speech_transform
 
 logger = logging.getLogger("agent")
 
@@ -183,6 +183,8 @@ async def my_agent(ctx: JobContext):
             model="fishaudio/s2.1-pro-free",
             voice=voice_id,
         ),
+        # Dedicated TTS text transform normalizes numbers & strips dashes exclusively for audio
+        tts_text_transforms=[tts_speech_transform],
         # SYNCHRONIZE TRANSCRIPTION TO TTS AUDIO PLAYBACK (LiveKit native)
         use_tts_aligned_transcript=True,
         # VAD & Endpointing: Standard Production Tuned

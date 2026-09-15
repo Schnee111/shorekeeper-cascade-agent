@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import AsyncGenerator, AsyncIterable
 from typing import Any
 
 import websockets
@@ -606,12 +607,12 @@ def contains_scaffold(text: str) -> bool:
     return any(marker in low for marker in _SCAFFOLD_MARKERS)
 
 
-def clean_voice_text(text: str, *, lang: str | None = None) -> str:
+def clean_voice_text(text: str) -> str:
     """Strip markdown/emoji/URLs/control chars from one chunk of voice text.
 
     Server-side mirror of the client's cleanVoiceText() (voice-text.ts).
-    Preserves line breaks; collapses other whitespace. Normalizes numbers
-    to spoken words in English ('en') or Indonesian ('id') for Fish Audio TTS.
+    Preserves line breaks, bullet markers, and raw digits for visual UI
+    transcript and subtitles.
     """
     if not text:
         return ""
@@ -621,9 +622,7 @@ def clean_voice_text(text: str, *, lang: str | None = None) -> str:
     for bad, good in _MOJIBAKE:
         s = s.replace(bad, good)
 
-    # 1a. Em/en dashes: Fish S2.1 Pro reads them with NO pause (they behave
-    # like plain spaces). Convert to a comma so TTS gets a natural breath.
-    # Absorb surrounding whitespace so "you — what" becomes "you, what".
+    # 1a. Em/en dashes: normalize to comma with natural breath.
     s = re.sub(r"\s*[\u2014\u2013]\s*", ", ", s)
 
     # 2. Code fences → spoken placeholder; inline code keeps its text.
@@ -657,17 +656,12 @@ def clean_voice_text(text: str, *, lang: str | None = None) -> str:
     s = _URL_RE.sub("link", s)
     s = _EMAIL_RE.sub("alamat email", s)
 
-    # 5. Line-level markdown: hr, headings, bullets, quotes, table pipes.
+    # 5. Line-level markdown: hr, headings, quotes, table pipes.
+    # Note: Keep bullet markers (*, +, -, 1.) and newlines intact for visual UI transcript.
     s = _HR_RE.sub("", s)
     s = _HEADING_RE.sub("", s)
-    # Strip bullet markers from line start (*, +, -, •, or 1.) so Fish Audio TTS
-    # never vocalizes '-' as 'minus'.
-    s = _BULLET_LINE_RE.sub("", s)
     s = _QUOTE_RE.sub("", s)
     s = _TABLE_PIPE_RE.sub(" ", s)
-
-    # 5b. Strip standalone / dangling hyphens/dashes so they are never vocalized as 'minus'.
-    s = _STANDALONE_DASH_RE.sub(" ", s)
 
     # 6. Emphasis leftovers.
     s = _EMPHASIS_RE.sub("", s)
@@ -680,7 +674,31 @@ def clean_voice_text(text: str, *, lang: str | None = None) -> str:
     # 8. Normalize repeated punctuation.
     s = _REPEAT_PUNCT_RE.sub(r"\1", s)
 
-    # 8b. Normalize numbers/digits to spoken words (English/Indonesian) for Fish Audio TTS
+    # 9. Whitespace: collapse multiple horizontal spaces while preserving line breaks.
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def clean_text_for_tts(text: str, *, lang: str | None = None) -> str:
+    """Transform text specifically for speech synthesis (Fish Audio TTS).
+
+    Normalizes numbers to spoken words in English ('en') or Indonesian ('id'),
+    strips list bullet markers and standalone dashes so TTS never vocalizes '-' as 'minus',
+    and converts newlines to spaces so sentences flow smoothly without audio gaps.
+    """
+    if not text:
+        return ""
+    s = clean_voice_text(text)
+
+    # Strip bullet markers from line start (*, +, -, •, or 1.) so Fish Audio TTS
+    # never vocalizes '-' as 'minus'.
+    s = _BULLET_LINE_RE.sub("", s)
+
+    # Strip standalone / dangling hyphens/dashes so they are never vocalized as 'minus'.
+    s = _STANDALONE_DASH_RE.sub(" ", s)
+
+    # Normalize numbers/digits to spoken words (English/Indonesian) for Fish Audio TTS
     try:
         from num2words import num2words
 
@@ -706,16 +724,20 @@ def clean_voice_text(text: str, *, lang: str | None = None) -> str:
     except Exception:
         pass
 
-    # 9. Whitespace: newlines → space (voice text is read linearly), collapse
-    # runs, cap blank lines, trim. (Newlines must become SPACES, not vanish,
-    # or consecutive sentences run together: "Schnee.Semua sistem".)
+    # Whitespace: newlines → space (voice text is read linearly), collapse runs, trim.
     s = s.replace("\n", " ")
     s = re.sub(r"[ \t]{2,}", " ", s).strip()
     return s
 
 
-# Alias for clean_voice_text to support alternative naming conventions
-clean_text_for_tts = clean_voice_text
+async def tts_speech_transform(
+    text_stream: AsyncIterable[str],
+) -> AsyncGenerator[str, None]:
+    """LiveKit Agents text transform that normalizes numbers and formats text for TTS."""
+    async for chunk in text_stream:
+        transformed = clean_text_for_tts(chunk)
+        if transformed:
+            yield transformed + " "
 
 
 def _split_sentence(buffer: str) -> tuple[str | None, str]:
@@ -1381,9 +1403,10 @@ class HermesLLMStream(LLMStream):
                         else:
                             logger.info(
                                 "LLM already emitted opening sentence, "
-                                "skipping engine filler for tool: %s",
+                                "scheduling dwell for slow tool: %s",
                                 tool_name,
                             )
+                            await filler.schedule_dwell(send_filler)
                     else:
                         # Subsequent tools: schedule dwell filler for extended
                         # silence during multi-tool.

@@ -122,6 +122,37 @@ async def test_filler_rotation():
     print("\n✅ Filler variety test PASSED")
 
 
+async def test_first_tool_dwell_scheduling_when_llm_pre_emitted():
+    """Verify that when LLM pre-emits text before tool start, schedule_dwell is armed."""
+    print("\n=== Testing First Tool Dwell Scheduling ===\n")
+    loop = asyncio.get_event_loop()
+    filler = _FillerEngine(loop)
+
+    is_first = filler.record_tool_start("web_search")
+    assert is_first
+    filler.reset_dwell()
+
+    # Simulate that LLM pre-emitted text before tool start
+    t_first_sentence = loop.time()
+    assert t_first_sentence is not None
+
+    sent_fillers = []
+
+    async def mock_send_filler(f: str) -> None:
+        sent_fillers.append(f)
+
+    # Schedule dwell
+    await filler.schedule_dwell(mock_send_filler)
+    assert filler._filler_task is not None
+    assert not filler._filler_task.done()
+
+    # Clean up
+    filler.cancel_pending()
+    filler.record_tool_end()
+    assert not filler.has_active_tools
+    print("✅ First tool dwell scheduling test PASSED")
+
+
 async def main():
     print("Running E2E tests for Smart Filler Engine v6\n")
     print("=" * 60)
