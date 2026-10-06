@@ -1,11 +1,15 @@
 import json
 import os
+import re
 
 from aiohttp import web
 from dotenv import load_dotenv
 from livekit import api
 
 load_dotenv(".env.local")
+
+IDENTITY_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
+ROOM_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 VOICES = {
     "gura": "2bddc7ca0d5c4973b08aacd476ba2fae",
@@ -75,6 +79,33 @@ async def voices_list(request):
 async def get_token(request):
     room_name = request.query.get("room", "test-room")
     identity = request.query.get("identity", "schnee")
+
+    if not IDENTITY_REGEX.match(identity):
+        return web.Response(
+            status=400,
+            text=json.dumps(
+                {
+                    "error": "INVALID_IDENTITY",
+                    "message": "Identity must match ^[a-zA-Z0-9_-]{1,32}$",
+                }
+            ),
+            content_type="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    if not ROOM_REGEX.match(room_name):
+        return web.Response(
+            status=400,
+            text=json.dumps(
+                {
+                    "error": "INVALID_ROOM",
+                    "message": "Room must match ^[a-zA-Z0-9_-]{1,64}$",
+                }
+            ),
+            content_type="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
     voice_key = request.query.get("voice", DEFAULT_VOICE)
     voice_id = VOICES.get(voice_key, VOICES[DEFAULT_VOICE])
     model = request.query.get("model", "")
@@ -114,19 +145,25 @@ async def get_token(request):
     )
 
 
-app = web.Application()
-app.router.add_get("/token", get_token)
-app.router.add_get("/voices", voices_list)
-app.router.add_options(
-    "/token",
-    lambda r: web.Response(
+async def _cors_options(_request: web.Request) -> web.Response:
+    return web.Response(
         headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET",
             "Access-Control-Allow-Headers": "Content-Type",
         }
-    ),
-)
+    )
+
+
+def create_app() -> web.Application:
+    new_app = web.Application()
+    new_app.router.add_get("/token", get_token)
+    new_app.router.add_get("/voices", voices_list)
+    new_app.router.add_options("/token", _cors_options)
+    return new_app
+
+
+app = create_app()
 
 if __name__ == "__main__":
     web.run_app(app, port=8082, host="127.0.0.1")
