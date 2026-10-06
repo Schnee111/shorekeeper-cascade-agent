@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.12](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.11...shorekeeper-cascade-agent-v1.7.12) (2026-10-06)
+
+
+### Bug Fixes
+
+* **token:** enforce regex validation on identity and room query parameters ([1ea9221](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/1ea9221bfa9c508c209cb3588e22f586821267ee))
+* **token:** enforce regex validation on identity and room query parameters ([6aa62eb](https://github.com/Schnee111/shorekeeper-cascade-agent/commit/6aa62eb7e1af9f63e1552878bf9a5088ed87f86c))
+
 ## [1.7.11](https://github.com/Schnee111/shorekeeper-cascade-agent/compare/shorekeeper-cascade-agent-v1.7.10...shorekeeper-cascade-agent-v1.7.11) (2026-09-15)
 
 
